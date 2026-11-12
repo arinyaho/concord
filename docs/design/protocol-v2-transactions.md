@@ -1,6 +1,6 @@
 # Protocol-v2 transactions in the packaged runner and file targets
 
-Protocol v2 plans root-cause groups, fixes each group, certifies the candidate and commits it. The packaged runner (`plugins/concord/core/codex-review-runner.js`) drives it, and native drivers follow `plugins/concord/core/review-driver.md`. This note fixes the gaps in #166 and #168: a legitimate no-edit fix ends in a harness failure, a file target can enter a round transaction it cannot certify, plan and certificate identities are not exact, structural evidence is bound only to a hash, and a certified file edit is recorded as `unresolved` in review history.
+Protocol v2 plans root-cause groups, fixes each group, certifies the candidate and commits it. The packaged runner (`plugins/concord/core/codex-review-runner.js`) drives it. This note fixes the gaps in #166 and #168: a legitimate no-edit fix ends in a harness failure, a file target can enter a round transaction it cannot certify, plan and certificate identities are not exact, structural evidence is bound only to a hash, and a certified file edit is recorded as `unresolved` in review history.
 
 ## Decisions
 
@@ -41,12 +41,6 @@ For a structural `action:"fix"` group, `plan-fixes` reads `<stateDir>/intent-<sl
 ### Review history
 
 `record` derives each group's history outcome from the member dispositions it has just computed: `fixed` when every member of the group is in `fixedIds`, otherwise `reconcile` when the round reconciles and `unresolved` otherwise. `fixCommit` is the journal sha for a Git target and `file-edit` for a file target. For a Git target the journal entry is what puts those members in `fixedIds`, so one rule covers both targets and history cannot contradict finding status. The next round's `round-<n>-history.json` is built from `review_history`, so the planner sees a certified file edit as fixed.
-
-### Driver text
-
-`review-driver.md` step 5 and its copy in `plugins/concord/commands/review-and-fix.md` still describe a certificate that attests invariants and file targets limited to singleton groups. Both take the step-5 text below; `plugins/concord/skills/review-until-lgtm/SKILL.md` step 3 describes the certifier's check, not the certificate, so it is unchanged.
-
-> 5. For each authorized group, reserve one `fix` launch and apply one coherent change for its complete membership. The fixer MUST write ONLY its result JSON to `<stateDir>/round-<n>-fix-<safe-group-id>.json`: `{"status":"ok","edited":false}`, or `edited:true` with the exact `groupId` and every edited file. When the group reports `edited:false`, launch no certifier and run no `commit-fix` for it; `record` parks its findings as `needs-decision`. Otherwise reserve an independent `certify` launch, and paste the `files` arrays of the group's fix declarations verbatim into its prompt as the edited files to inspect. The certifier checks the actual candidate against every member finding and planned invariant and writes `blocked` unless all of them hold, so its `ok` is the attestation; the certificate itself carries the `groupId`, the exact resolved finding ids, the exact union of edited files with the SHA-256 of each file's current bytes, and focused evidence, never the invariants. It MUST write ONLY its certificate JSON to `<stateDir>/round-<n>-certify-<safe-id>.json`; span disappearance is neither necessary nor sufficient. For `transactionScope:"group"`, run `commit-fix <ref> <groupId>` only after that group's certificate, and finish it before the next group's fixer. For `transactionScope:"round"`, run all group fixers sequentially in the same candidate; when every member edited, certify the complete plan once and run `commit-fix <ref> <planId>` once, and when any member reports `edited:false`, certify and commit nothing. A partial or stale certificate never commits. File targets use explicit groups and certified content but skip the Git commit; for a file target whose groups share an invariant, `plan-fixes` returns `transactionScope:"round"` with empty `fixGroups` and a reconcile packet, so no fixer runs.
 
 ## State and event table
 

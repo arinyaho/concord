@@ -4,12 +4,13 @@ Where to look first:
 
 | Path | What lives there |
 | --- | --- |
-| `plugins/concord/core/` | The vendor-neutral review, charter, and gate logic. `plugins/concord-codex/engine/` holds the same files plus harness-specific additions. |
-| `plugins/concord/skills/` | The shared workflow skills (`SKILL.md` per skill). |
+| `plugins/concord/core/` | The charter and session-state logic, and the review engine that `review-until-approve` runs. `plugins/concord-codex/engine/` holds the same files plus harness-specific additions. |
+| `plugins/concord/skills/` | The shared workflow skills (`SKILL.md` per skill). `node plugins/concord-codex/bin/bundle.mjs` copies them into the Codex package. |
+| `plugins/concord/agents/` | Agent definitions for Claude Code. The reviewer and the implementer have the same text as a reference file in their skill, which Codex uses. |
 | `plugins/*/hooks/`, `plugins/concord/adapters/`, `plugins/concord/commands/`, `plugins/concord-codex/commands/` | Per-harness glue and slash commands. |
 | `plugins/concord/hooks/test/` | The plugin test suite. |
 | `docs/design/` | Design documents and decision records. |
-| `scripts/dod.mjs`, `review.config.json` | The repo's definition of done, run by the review loop. |
+| `scripts/dod.mjs`, `review.config.json` | The plugin-install end-to-end check, and the configuration that names it as this repository's definition of done for the review engine. |
 | `VERSION`, `scripts/release-version.mjs` | Release version and the script that applies it to every manifest. |
 | `.github/workflows/` | CI. |
 
@@ -34,4 +35,4 @@ Fix review comments that are rollout blockers (serious bugs, security issues, un
 
 When you file a new issue, add the `good first issue` label if a first-time contributor could take it: it is small and self-contained, names the files to change and the change, has acceptance criteria a reader can understand without the project's history, and leaves no design question open. A triage issue that collects minor review comments, protocol work, and an issue with a design choice still open do not qualify.
 
-Group small issues that change the same file or area into one pull request, including the tickets filed for minor review comments, and take the groups with the most issues first. Run groups in different areas in parallel when the files they change do not overlap. Within a group, mark each item that needs rule wording or a design, and give it to an agent of Opus-class or higher capability. The pull request body gives each issue it closes its own `Closes #n` line, or `Closes OWNER/REPOSITORY#n` for an issue in another repository, because GitHub closes only the first issue of a list such as `Closes #231, #235, #239`, and writes each related issue it leaves open as `Refs #n` or `Related: #n`, qualified the same way. After the merge, the coordinating session or the user who merges checks that every issue meant to close is closed, using the `Closes` lines in the PR body; for one still open, record which acceptance criterion is unmet or why the keyword did not apply, and leave the decision to close it to the user.
+Group small issues that change the same file or area into one pull request, including the tickets filed for minor review comments, and take the groups with the most issues first. Run groups in different areas in parallel when the files they change do not overlap. Within a group, mark each item that needs rule wording or a design, and give it to an agent of Opus-class or higher capability. The pull request body gives each issue it closes its own `Closes #n` line, or `Closes OWNER/REPOSITORY#n` for an issue in another repository, because GitHub closes only the first issue of a list such as `Closes #231, #235, #239`, and writes each related issue it leaves open as `Refs #n` or `Related: #n`, qualified the same way. After the merge, check that every issue meant to close is closed, using the `Closes` lines in the PR body; for one still open, record which acceptance criterion is unmet or why the keyword did not apply, and leave the decision to close it to the user.

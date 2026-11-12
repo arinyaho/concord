@@ -4,12 +4,12 @@ description: >-
   Use when the user names someone else's pull request and wants it reviewed in a loop: review it, publish the findings,
   wait for the author to push and reply (one small model call per two-hour window on Claude Code, resumable start checks on Codex), review what changed, and approve once a round is clean —
   "이 PR 승인될 때까지 리뷰해줘", "review this PR until it is approvable", "watch the PR and approve when clean".
-  Do NOT use for your own branch (use review-and-fix) or to collect other reviewers' comments on your own PR (use review-until-lgtm).
+  Do NOT use for your own branch (use review-and-fix) or to collect other reviewers' comments on your own PR (use pr-to-merge).
 ---
 
 # Review until approve
 
-`/review-and-fix` that never fixes. You review a pull request you did not write, publish the verified findings as one review per round, wait for the author, review the delta, and approve the reviewed head when nothing blocks. You never request changes, merge, push to the branch, run a command the pull request provides, or post anywhere but that pull request. Use this skill only for a pull request the user named. Keep what you say to one line per phase: the reviewer note, each round's outcome, the final verdict. Say nothing between watch windows (a window that ends with `idle` or a killed run is not an event) and do not repeat a warning you already relayed in this run.
+A review loop that never fixes. You review a pull request you did not write, publish the verified findings as one review per round, wait for the author, review the delta, and approve the reviewed head when nothing blocks. You never request changes, merge, push to the branch, run a command the pull request provides, or post anywhere but that pull request. Use this skill only for a pull request the user named. Keep what you say to one line per phase: the reviewer note, each round's outcome, the final verdict. Say nothing between watch windows (a window that ends with `idle` or a killed run is not an event) and do not repeat a warning you already relayed in this run.
 
 The decisions behind each step are in `docs/design/review-until-approve.md`.
 

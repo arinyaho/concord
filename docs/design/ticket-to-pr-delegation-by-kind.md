@@ -1,21 +1,23 @@
-# Delegation by kind of work in ticket-to-pr
+# Design work and applying a decision in ticket-to-pr
 
-A rule that routes work to a deep-capability agent only when a choice is important depends on the judgment of importance, which is itself design work, so the rule is applied by the agent least suited to apply it. The "Delegation" section of the `ticket-to-pr` skill therefore routes by the kind of work. That section is the authoritative statement of the rule; this note summarizes it only to explain why it has that shape, and where the two differ the skill governs.
+A rule that routes work to a more capable model only when a choice is important depends on the judgment of importance, which is itself design work, so the rule is applied by the agent least suited to apply it. The "Design work and applying a decision" section of the `ticket-to-pr` skill therefore routes by the kind of work. That section is the authoritative statement of the rule; this note explains why it has that shape, and where the two differ the skill governs.
 
 ## Decision
 
-The rule asks one question that the task itself answers: does the task decide what something should be, or apply a decision already made. Design work (the content and wording of a rule, contract, interface, schema or architecture) requires evidence from a callable model that meets the Deep capability gate and the user's model policy; a user-designated capable model can provide that evidence without an extra specialist solely for the selected model. Implementation, tests, edits, pushes and PR handling stay with the active agent. A task that mixes both kinds is split by the reader.
+The rule asks one question that the task itself answers: does the task decide what something should be, or apply a decision already made. Design work (the content and wording of a rule, a contract, an interface, a schema, or an architecture) is examined by a model of the most capable class the harness offers, within the models the user allows. Implementation, tests, edits, pushes, and the pull request stay with the agent doing the work. A task that mixes both kinds is split by the reader.
 
-A review finding against the content or wording of a rule, contract, interface or schema is design work. For a finding a PR review raised, in a thread or in a review body, the skill defers to the "Adjudicate and escalate" subsection of `review-until-lgtm`, which batches accepted findings for one adjudication call per head when a listed signal holds. For local review, adjudicate the substantive findings once per stage using a callable model that meets the Deep gate and the user's model policy, then have the active agent apply the verdict. Do not request a separate escalation per finding. A finding in a review body has no thread, so the reply that subsection posts on a thread goes instead to a PR comment that quotes the finding's URL, with the same disposition.
+A review finding against the content or wording of a rule, a contract, an interface, or a schema is design work.
 
-The separate-reviewer requirement for cryptography, security and migration stays. It names areas and not a degree of importance, so it needs no judgment to trigger.
+The second look in a separate context for cryptography, security, and migration design stays. It names areas and not a degree of importance, so it needs no judgment to trigger.
+
+A new design choice that changes the acceptance criteria, the scope, or the approved design is a product decision under [workflow-state-and-stops.md](workflow-state-and-stops.md): a worker reports it and does not make it.
 
 ## Cost and residual exposure
 
-Design decisions and substantive rule findings require an appropriately capable model, but a user-designated callable model may fill that role when it meets the gate. Ticket #223 records the measured cost of one escalation in #218 as about 70K tokens, against many rounds of default-model patching of the "Stateful changes" wording (PR #221).
+Design decisions cost a call to a more capable model. Patching rule wording with a default model over many attempts costs more than one such call.
 
-A task can mix both kinds, and the split is the reader's judgment; the question is answerable from the task but a boundary case is still decided by the reader.
+A task can mix both kinds, and the split is the reader's judgment; the question is answerable from the task, but a boundary case is still decided by the reader.
 
 ## Evidence and executable gates
 
-The skill-content test in `plugins/concord/hooks/test/ticket-writing-skill.test.js` asserts that the section does not contain the word "material" and does contain the design-versus-apply question, the separate-reviewer requirement and the pointer to the "Adjudicate and escalate" subsection as literal phrases, and compares the shared and Codex copies; the Codex bundler regenerates the Codex copy.
+The skill-content test in `plugins/concord/hooks/test/ticket-writing-skill.test.js` asserts that the skill asks the design-versus-apply question and that a worker reports a new design choice, and compares the shared and Codex copies; the Codex bundler regenerates the Codex copy.

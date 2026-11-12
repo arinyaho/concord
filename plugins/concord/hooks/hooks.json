@@ -2,36 +2,36 @@
   "description": "Persist per-session state from the transcript and re-inject it on session start.",
   "hooks": {
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-state-writer.js\"" } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-state-writer.js\""
+          }
+        ]
+      }
     ],
     "SessionStart": [
-      { "matcher": "startup|resume|compact", "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-state-injector.js\"" },
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/review-injector.js\"" }
-        ] }
-    ],
-    "PreToolUse": [
-      { "matcher": "Agent|Task", "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/review-telemetry.js\"" }
-        ] }
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-state-injector.js\""
+          }
+        ]
+      }
     ],
     "PostToolUse": [
-      { "matcher": "Agent|Task", "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/review-telemetry.js\"" }
-        ] },
-      { "matcher": "Bash", "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/grep-sweep-reminder.js\"" }
-        ] }
-    ],
-    "PostToolUseFailure": [
-      { "matcher": "Agent|Task", "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/review-telemetry.js\"" }
-        ] }
-    ],
-    "SubagentStop": [
-      { "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/review-telemetry.js\"" }
-        ] }
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/grep-sweep-reminder.js\""
+          }
+        ]
+      }
     ]
   }
 }

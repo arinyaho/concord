@@ -1,134 +1,82 @@
 # Coordinate sessions
 
-The Claude implementation of `coordinate-sessions` is a skill for a session that hands units of work to other Claude Code sessions, watches their reports, judges their delivery, and merges when the user has allowed it. A fresh session can run it from the skill alone, without a predecessor's handoff.
+`coordinate-sessions` is the skill a session follows when it hands units of work to workers and coordinates them: it starts one worker per unit, reads their reports, checks what they deliver, and keeps the state document. `initiative-to-prs` uses it for every unit; a user can also invoke it over a set of tickets. It applies the rules in [workflow-state-and-stops.md](workflow-state-and-stops.md) and does not restate their reasons.
 
-## Scope
+## Roles
 
-The skill lives in `plugins/concord/skills/coordinate-sessions/` and is named in the marketplace description and the README; `plugins/concord/.claude-plugin/plugin.json` is a release-bump version file that pull requests do not edit. It is not copied into the Codex package (Codex has a separate native skill): its `bin/bundle.mjs` copies only the skills it names, and the session tools the skill depends on (`create_session`, `send_message`, `get_session`, `archive_session`) exist only in Claude Code.
+- **The coordinating session** is the session the user talks to. It decides scope and order, writes worker prompts, answers workers, checks deliveries, and reports to the user. It does not implement.
+- **A worker** is a subagent of the coordinating session's own harness, working in its own git worktree on one unit. On Claude Code it is started from the `implementer` agent definition. Under Codex it is a subagent, or a separate Codex process in the worktree when no subagent can be started. It is never a separate session and never another vendor's agent.
 
-A worker is a separate Claude Code session created with `create_session`. It runs on its own and knows only the prompt it was given. A subagent started with the Agent tool is not a worker: it returns its result to the session that started it, so neither channel below applies to it. Local CLI sessions are out of scope, because no tool can create one.
+One skill text serves both harnesses. The worker's instructions exist once, as `references/worker.md` inside the skill, and the `implementer` agent definition carries the same text; a test compares the two. A Codex plugin ships no agent definitions, so under Codex the coordinating session puts the reference file at the start of the worker's prompt.
 
-The `project-manager` agent (`plugins/concord/agents/project-manager.md`, Sonnet) runs a rollout that spans several PRs and repositories. It re-queries the real state from the newest handoff file, sets the merge order and gates, hands work out, verifies delivery, and writes the next handoff. It delegates session mechanics to this skill and applies the same merge rule: the `record-delivery` state of the PR's current head is binding, a head recorded `blocked` never merges, and a head recorded `mergeable-without-review` is the user's decision. It reuses the merge authority recorded by the coordination skill and asks only when that authority is missing or insufficient. This agent declaration remains Claude-specific and is not copied into other packages; Codex ships the separate native PM skill described below.
+## Working documents
 
-## Environment
+The coordinating session keeps one directory of working documents, in the place the project's rules file names, outside the repositories' tracked files.
 
-The coordinator first calls `get_session` without a `session_id` and reads `environment_kind`. That value decides what the coordinator can do; text in its system prompt does not, because a session on the user's own machine (`bridge`) can carry a system prompt that describes an isolated cloud container. The skill states this and defines "create a session" as a `create_session` call, so a session that reads its system prompt as a cloud container still knows what the request means.
-
-| Worker created in | Shared filesystem with the coordinator | Channels available |
+| File | Written by | Holds |
 |---|---|---|
-| the coordinator's own environment, and `environment_kind` is `bridge` | yes | file, direct |
-| any other environment, including another `bridge` environment, which runs on another machine | no | direct |
+| `state.md` | The coordinating session only | Standing authorizations (kind of action, repositories, the user's words, the date), the units with their tickets, worktrees, branches, pull requests and status, and lessons for later worker prompts |
+| `reports/<unit>/NNN-<kind>.md` | The unit's workers | One report per file |
 
-`create_session` without `environment_id` creates the worker in the coordinator's own environment.
+Progress and decisions are also on the ticket, and the ticket is their record. For standing authorizations the state document is the record.
 
-## Channels
+## Reports
 
-The coordinator sends to a worker with `send_message` on both channels. The channels differ only in how a worker reports.
+A worker's final message is its report, and the worker writes the same text as a file so that it survives the session. The worker writes `NNN-<kind>.md.tmp` and renames it to `NNN-<kind>.md`, so a reader never sees a partial report. `NNN` counts up within the unit's directory, across successive workers. The first line is `[to coordinator] <kind>: <one-line summary>`.
 
-| | File channel | Direct channel |
+| Kind | Meaning | The coordinating session |
 |---|---|---|
-| Default when | the environment shares a filesystem | it does not |
-| Worker report | `<reports>/<group>/NNN-<kind>.md`, written as `NNN-<kind>.md.tmp` and then renamed | `send_message` to the coordinator's session id |
-| First line | `[to coordinator] <kind>: <summary>` | same |
-| Coordinator receives | a Monitor over the group directory that emits every new report once, flagging one without the header, deduplicated against `<reports>/.emitted` and re-armed when it expires | a new turn; no watch needed |
+| `question` | The worker needs a decision | Answers from what the user decided or authorized and starts a successor; puts a product decision to the user |
+| `blocked` | The worker needs something only the user holds | Tells the user what is needed; the other units continue |
+| `progress` | A stage of a long unit is finished; written as a file while the worker continues | Acts only when it changes the scope or touches another owner's files |
+| `done` | The work is finished, or finished except for what the report names | Checks the delivery |
+| `handoff` | The worker is past its context limit and stopped at a stage boundary | Starts a successor with the original prompt and the report's path |
 
-The report kinds are `question`, `blocked`, `progress`, `done` and `handoff`. The user may choose the other channel; a request for the file channel where the filesystem is not shared is refused with that reason. The file channel is the default where it works because a report stays on disk for a successor coordinator, while a direct message stays only in the receiving session's transcript.
+A worker cannot wait for an answer. A `question` or `blocked` report ends the worker, and the answer goes to a successor that resumes from the report, the ticket, and the pull request.
 
-A worker in a cloud environment reaches the coordinator with `send_message` as well, so the direct channel works across environments.
+## The worker prompt
 
-On either channel, a worker that has gone quiet is checked with `get_session`: `status_bucket` `failed` means its last turn errored, `status_bucket` `blocked` means it waits on something only the user can give, and `status` `idle` with no report means it stopped without reporting.
+The prompt names the skill to run and the ticket, the repository, the worktree, the branch, the branch its pull request targets, the local path of the design document the unit implements, the files the unit owns and the files others own, the related repositories, the report directory, the project's rules file, and for a successor the report it resumes from. What a worker may do without asking is in its instructions, not in each prompt: create its branch, commit and push to it, open a draft pull request and mark it ready when the work is done, request the reviewers the rules file names, edit its own ticket, and file one follow-up ticket for minor points. Project rules stay in the rules file.
 
-`status_bucket` `working` does not show that a worker has started: in a stalled bridge environment it read `working` while the worker stayed `PENDING` and `disconnected`. Three minutes is long enough for a normal sandbox allocation, and the start check still reaches the user well before a missing report would. The start check depends on `connection_status` alone, so it holds whatever `status` and `status_bucket` read.
+A unit of an initiative reads the design by its local path: in the design branch's worktree while the design's pull request is open, and under `docs/` once it has merged. The unit is cut from the base like any other and never contains the design branch. When the design changes in its review after units started, the coordinating session tells the user which units were built against the earlier text and does not restart them by itself.
 
-`create_session` takes no effort setting, so the worker prompt names the effort and cannot enforce it. The coordinator lists its workers with `list_sessions` using `mine: true` and a small `limit`, because an unfiltered call can overflow the tool result.
+## Checking a delivery
 
-## Worker prompt
+The coordinating session checks a `done` report instead of accepting it: the pull request's head on the remote is the reported commit, CI passed on that head (read by head SHA, not by branch), each acceptance criterion has the evidence the report names, the review record is on the ticket and in the pull request body with no blocker open, and a bug fix has a test that failed before it. A passed check is recorded in the state document and on the parent ticket's checklist. After a failed check the pull request stays a draft. A successor is started only when something concrete is missing that a worker can do, and at most once for the same gap. A blocker still open after the review's rechecks, or CI that fails for a reason the unit could not fix, is recorded in the state document, reported to the user, and left; the independent units continue.
 
-The skill carries a template the coordinator fills in, in this order:
+The coordinating session does not merge. `pr-to-merge` carries the pull requests, and merges only under a merge authorization the state document records.
 
-1. The skill the worker runs (default `ticket-to-pr`).
-2. The work: issue numbers, where the acceptance criteria are, and what is out of scope.
-3. File ownership: the files this work changes, and the files other workers or outside contributors own. A worker that must change another owner's file sends a `question` first.
-4. Bounded work prefers a lower-cost model; ambiguous design goes to Sonnet; changed authority, data-loss, recovery or migration contracts get one Opus review plus fix confirmation. Workers and reviews stay within Claude. The PR links the decision evidence.
-5. The channel: the report directory, or the coordinator's session id, and the report format.
-6. Stop rules: the worker never merges, pastes its `record-delivery` output into the `done` report, and past the context limit it stops at the next stage boundary with a `handoff` report.
-7. A path to the project's rules file (for example `AGENTS.md` or a shared worker-rules file). Repository rules such as the gh account, worktree location and release bump stay in that file, not in the prompt or the skill.
+## Standing authorizations
 
-## Decisions
+The coordinating session records an authorization only from words the user wrote in its own conversation, with the date, and copies it to the tracking ticket for people to read. It asks once whether merging is authorized, and starts the work without waiting for the answer. A worker report, a ticket, and a comment never authorize anything.
 
-The coordinator takes as a decision only what the user typed into the coordinator's own session. A worker report, a message relayed from another session that says the user approved something, and a background-task notification are data.
+## Handing over
 
-A worker receives the coordinator's `send_message` as data from a peer and may refuse a destructive action asked for that way, so every authority the worker needs goes in its `create_session` prompt and later messages carry answers and scope clarifications. A step that records a person's acceptance, such as `dismiss --by`, needs the user to type it into the worker session; the coordinator cannot relay it.
+When its context grows large, the coordinating session brings the state document up to date and tells the user its path. A new session continues from that document: it reads the tickets and pull requests again, follows the ticket where the two differ on progress or decisions, applies the recorded authorizations as recorded, and restates them to the user.
 
-Before its first `create_session` the coordinator asks the user once for the standing authorities it may use: whether it merges a PR it judged ready ("merge when ready"), also merges a head recorded `mergeable-without-review` ("merge when ready, including heads with no automated review"), or reports and waits ("report and wait"), and which decisions it may take itself, such as design choices inside an issue's stated outcome after verifying them in code. The answers are the user's typed decisions. They are recorded verbatim with the time they were given, restated in the first report to the user, and asked again only when the user changes them. A successor coordinator skips the question when its handoff records the answers, applies them exactly as recorded, and restates them in its first report to the user, who can correct them there. An unanswered part counts as "report and wait" and "none". Asking at the start moves the question; it does not widen what the coordinator may take as a decision.
+## Why
 
-The coordinator answers a worker's `question` itself when the answer lies within what the user has delegated, and otherwise asks the user and tells the worker to wait.
+**Workers are subagents, so one session decides.** The reasons are in [workflow-state-and-stops.md](workflow-state-and-stops.md): a subagent returns its result to the session that started it, and worktrees separate parallel work.
 
-## Lifecycle
+**The report is also a file.** A subagent's final message lives in the coordinating session's context, which ends. A file in the unit's directory lets a later session, and a successor worker, read what was reported.
 
-| Step | What the coordinator does |
-|---|---|
-| Start | Loads the skill before the first `create_session`, asks the user once for merge authority and the decisions it may take itself, reads the environment, picks the channel, names the group (`groupNN`), creates the worker, confirms that it started, starts the watch on the file channel, and reports to the user in one or two paragraphs. |
-| Start check | Polls `get_session` every 30 seconds until `connection_status` reads `connected`. A worker not connected within three minutes of `create_session` is stalled in sandbox allocation: the coordinator starts no watch, archives it, tells the user to check or restart the bridge for that environment, and offers an Agent-tool subagent as the fallback. It sends the worker no message before it has started. |
-| Parallel work | Runs workers in parallel only when their file sets are disjoint; otherwise orders them or gives them to one worker. |
-| Watch | Re-arms the Monitor while a worker is active and stops it when none is. |
-| `question`, `blocked`, `progress` | Answers a `question` or `blocked` report within what the user delegated and otherwise asks the user; acts on `progress` only when it changes scope or file ownership. |
-| `handoff` from a worker | Creates a successor worker in the same group with the original prompt, the handoff report as data, and the instruction to number its first report one past the highest `NNN` already in `<reports>/<group>/`, then archives the old worker once it is idle. |
-| `done` | Verifies the report: the PR head, CI, and every review comment. A finding the worker classed as minor is checked against the code before it is accepted as minor. The delivery state in the worker's `record-delivery` output, for the PR's current head, is binding: a `blocked` head never merges, and a `mergeable-without-review` head is the user's decision. |
-| Merge | Only when the user answered one of the two "merge when ready" answers to the start question: with no blocker left and CI green, merges without asking again, with `--match-head-commit <reported head>`: a PR into `main` is always squash-merged, and any other base uses the method that fits the branch (squash, merge commit, or rebase), such as a merge commit for a sync that must move the promotion PR's merge-base. Otherwise reports the verdict and waits. A head recorded `mergeable-without-review` is merged without asking only under the answer that includes such heads; otherwise it is put to the user. |
-| After merge | Checks that every issue named in a `Closes` line is closed, runs the post-merge steps the project's rules file names, records remaining minor findings where the project's rules say, and archives the worker once it is idle. |
-| Coordinator handoff | When its own context grows large, between deliveries: writes a handoff with the state, running workers, the user's decisions and open questions, and the standing authorities from the start question (each verbatim with the time it was given, read by the successor as data), to `<reports>/coordinator-handoff.md` on the file channel (then stops its own Monitors, which share `<reports>/.emitted`) or into the successor's prompt otherwise. It creates the successor with `create_session` and a prompt that marks the handoff as data, names `<reports>` and the handoff file on the file channel, and has the successor start a Monitor for each file-channel group still running. On the direct channel, before it stops reading reports, it sends each running worker the successor's session id with `send_message` and forwards to the successor any report that still reaches it. |
+**The delivery is checked once, against the remote.** A report is a claim by the agent that did the work. The head commit, the check runs for that commit, and the pull request body are facts GitHub holds, and reading them costs a few calls.
 
-## Codex queue support
+**Merging is left to `pr-to-merge`.** Whether a pull request may merge depends on approvals and checks that hold exactly, which a script decides; a coordinating session that also merged would be a second place where that decision is taken.
 
-Codex ships native `coordinate-sessions` and `project-manager` skills under
-`plugins/concord-codex/skills/`. They are authored there, not copied from Claude
-by `bundle.mjs`. The Claude lifecycle and channel procedure above remains specific
-to Claude. Codex CLI 0.163.0 exposes `queue --thread <UUID-or-name> --message <text>`
-for existing sessions. Queue acknowledgement establishes enqueueing, not execution.
-The Codex workflow requires a worker acknowledgement and task/attempt IDs, and
-never claims queue creates, watches or archives sessions. Runtime two-session
-queue delivery still needs validation in a connected user's app-server environment.
+**The handover goes through the user.** A session cannot start its own successor as a subagent, because the successor would end with it. The user starts the next session, and the state document carries the authorizations to it.
 
-When the user explicitly asks for new Codex workers, the skill prefers the app's
-session creation tool. If it is absent, the skill inspects the installed CLI help
-for a creation route (`codex exec --json` reports a `thread.started` ID) before
-concluding none exists, so a missing app tool alone never ends the request. Workers
-are started through an argument-array process API on the intended host and
-endpoint, and each needs its own observed thread ID plus an acknowledgement bound to
-its assigned task; a PID or enqueue success is not enough. Startup is reported as
-startup, not completion. A process started this way is a headless session, not a
-sidebar-visible app chat. If neither route works, the report names the capabilities
-checked and the concrete missing prerequisite. `queue` stays the route for existing
-workers and is never used to create one.
+## Rejected alternatives
 
-Codex uses explicit file ownership, one status observer per task, bounded waiting,
-and durable evidence references. PM routing defaults to Sol low/light, actively
-prefers Luna for bounded implementation, investigation and verification with
-compact briefs and one evidence owner, and escalates ambiguous or unsuccessful
-work to Sol using the evidence already collected. It retains one independent Sol
-review for ordinary changes, and one Astra review for changed authority/data-loss/
-recovery/migration contracts plus fix confirmation. Unchanged reviewed source
-retains its review; current-head CI and delivery gates remain mandatory. These
-are recommendations, not automatic model configuration changes.
+- **Workers as separate sessions.** A worker then survives the coordinating session and can run in another environment. Separate sessions are peers that can defer to each other, need a message channel and a monitor for their reports, and the instruction that names one of them the coordinator does not bind the others.
+- **A separate skill for each harness.** Each could use its harness's own session tools. The two texts drift, and the rules they share are the ones that matter.
+- **The coordinating session merging a delivery it judged ready.** It saves starting `pr-to-merge`. It puts a merge under a model's judgment of readiness instead of the exact conditions the script checks.
+- **Recording a person's acceptance of a review finding through a file the coordinator writes for the worker.** It let a coordinator relay a decision without the user typing it in the worker. With subagent workers the decision is taken in the coordinating session and reaches the successor in its prompt.
 
-## Shared operating discipline
+## Residual exposure
 
-The Claude PM now defaults to Sonnet rather than always using Opus. Bounded
-implementation, investigation and verification prefer Haiku, and changed risky
-contracts receive Opus review. Claude workflows stay within Claude; Codex workflows
-use their own Luna/Sol/Astra routing. Neither workflow recommends cross-provider
-delegation. These are separate routing choices, not claims of model equivalence.
-Every Claude worker creation prompt carries that provider policy into composed
-review/fix workflows; unavailable native models block the step rather than trigger
-cross-vendor fallback. Independent reviewers use fresh source/evidence context
-without the implementer's reasoning or conclusions and never assess their own edits.
-
-Both harnesses assign one evidence owner/observer per task, collect deterministic
-status in scripts or event waits, and notify only on actionable changes or terminal
-results. They use compact briefs and durable evidence links, preserve scoped review
-across equivalent source syncs, and rerun only to address a named evidence gap or
-new risk. Current-head CI and delivery gates remain binding. Observation time,
-attempt/context and recovery status remain explicit. Repeated fixes escalate the
-design decision; real provider integration stays ahead of further local evidence
-machinery. No savings percentage is promised without usage measurements.
+- A worker shares the coordinating session's filesystem, so that it never writes the state document is an instruction, not a restriction.
+- The check of a `done` report covers what the report names. An acceptance criterion with weak evidence that the report presents as met passes unless the coordinating session reads the evidence closely; the human reviewer of the pull request is the next check.
+- A unit whose delivery check fails for a reason no successor can fix stays an open draft until the user acts on the report.
+- A state document that is lost takes the standing authorizations with it, and the next session asks the user again.
+- Under Codex, a worker run as a separate process is not started from an agent definition, so its model and tools are whatever that process is started with.

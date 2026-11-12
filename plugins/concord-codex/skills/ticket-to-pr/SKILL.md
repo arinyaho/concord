@@ -8,66 +8,94 @@ description: >-
 
 # Ticket to PR
 
-One repository implementation unit, one branch, one PR carrying the design and the code together. The default unit is one coherent approved ticket outcome; keep its atomic changes together. Split it only at an explicit independently deployable or revertible boundary, when a prerequisite must merge first, at a multi-repository delivery boundary, or for an ownership split justified in the approved plan. A frontend/backend label alone or arbitrary size is not a boundary. Every approved unit records its outcome, acceptance criteria, repository, base, dependency references, and boundary reason before implementation. Reject unrelated outcomes, an unsupported split, or an unclear boundary as `unit-boundary-unsettled` and return to planning. A user-visible outcome that can be accepted independently belongs in a separate ticket. The stages are a contract, not a suggested order: each one has an exit condition, and a stage whose exit condition is blocked stays blocked. It does not become a note in the PR body.
+One ticket, one branch, one pull request that carries the code together with the unit's design document, or with a link to the design it implements. The stages below are in the order the work happens, and each has an exit condition.
 
-## One outcome across repositories
+- **State.** The design goes in the repository's `docs/`. The plan, progress, decisions, and the review record go on the ticket. The change, its checks, and the review summary are on the pull request. Keep nothing that matters anywhere else: a session with no memory of this work must be able to resume from the ticket and the pull request.
+- **Stopping.** Stop and ask only for a product decision (a choice that changes the acceptance criteria, the scope, or the design), for something only the user holds (a credential, hardware, an account, a human approval), or before a hard-to-reverse action the user has not authorized (a merge, a release, a deletion, a message to people outside the session). Give the options and a recommendation, and continue the work that does not depend on the answer. Record every other obstacle on the ticket and continue.
+- **Project rules.** Tracker commands, repository locations, the worktree directory, pull request conventions, and reviewers come from the project's rules file. Read it first.
+- **What this authorizes.** Creating the branch and worktree, commits and pushes to that branch, opening the draft pull request and marking it ready, requesting the reviewers the rules file names, edits to this ticket (body, comments, status), and one follow-up ticket for minor points. Never merging, closing a pull request or a ticket, or anything on other pull requests.
 
-When one set of acceptance criteria requires multiple repositories, keep one outcome ticket and execute these stages once per repository unit. Each unit has its own branch, PR, owner, dependency, and executable red/green check for the behavior it changes. Record the exact upstream package version or deployment artifact consumed by a downstream unit; a proposed version is not a verified pin. The outcome ticket names one integration owner and maintains an ordered record of all units, PR URLs, checks, and hand-offs. For every PR, report its approved boundary reason and dependency references; for a stacked prerequisite, identify the prerequisite PR and base. Use a separate ticket only for an independently acceptable result or a genuinely separate owner or release lifecycle that needs its own tracker status.
+## The unit
 
-Record a discriminating outcome-level red against the unchanged combined system before treating the outcome as established. Stages 2 and 8 for each repository unit then use the narrowest executable check that proves that unit's contribution, including its real consumer when a library contract requires one. When the final `review-and-fix` DoD ran that same discriminating check against the exact final head, dependencies, and environment, reuse that evidence for stage 8 and do not run the check again; otherwise run the discriminating green once. Do not describe a unit's green as end-to-end green for the outcome. The integration owner later checks the same outcome behavior against the exact combined artifacts. If a required package release, pin, deployment, or environment is unavailable, record the outcome check as blocked with its owner and unblock condition; do not move the outcome ticket to `READY FOR TEST` or `Done`. This PR pipeline never authorizes a release or deployment.
-
-## Review mode selection
-
-When the user explicitly asks for a lite review, pass `--lite` to the standalone `review-and-fix` stage; do not create an initiative key or infer lite from diff size. Standalone `--lite` is incompatible with initiative flags and uses a different gate policy from initiative `--initiative-mode lite`. If the invocation already carries initiative flags, stop before review and explain the conflict instead of silently changing modes. Before starting standalone lite, check the approved contract for `public-api`, `schema`, `security`, `cross-package`, `migration`, `multi-outcome`, `unsettled-contract`, `cross-repository`, or `legal`; pass a matching `--lite-exclusion <trigger>` so the CLI refuses with the named reason and the user can choose a base review.
+The unit is one coherent ticket outcome; keep its changes together. Split it only at a boundary that can be deployed or reverted on its own, where a prerequisite must merge first, at a repository boundary, or for an ownership split the approved plan names. A frontend/backend label or size alone is not a boundary. An outcome a user could accept separately belongs in its own ticket. A ticket that mixes unrelated outcomes, or whose boundary you cannot name, goes back to its author as a product decision before you implement it.
 
 ## The stages
 
 | # | Stage | Exit condition |
 |---|---|---|
-| 0 | Branch | A dedicated work branch exists, is checked out, and starts from the intended base; create it if absent |
-| 1 | The work has agreed acceptance criteria and a definition of done, and any approved in-progress transition is applied | Every criterion names an observation, not an intention. The DoD says which gates are executable and which are deferred. The board reflects that work began only when the user approved that transition; a supplied Notion ticket is verified at `In progress`, `In review`, or `Done` |
-| 2 | Discriminating red | For a single-repository ticket, the claimed breakage or absent feature reproduces at the outcome level against unchanged code. For a repository unit under a multi-repository ticket, its contract check fails against the unchanged unit and the shared outcome-level red has been recorded |
-| 3 | Design note, committed where the next reader finds it | The decision, the trade-off it costs, and the residual exposure are all written down. A stateful change also carries the table defined in "Stateful changes"; any other change gives the one-line statement defined there |
-| 4 | Review the design note | `/review-and-fix file:<path>` |
-| 5 | Plan | Each task ends in something runnable and independently rejectable |
-| 6 | Implement | Red test first, verified red for the right reason, and executing where CI will execute it. Each row of a stateful change's table has the evidence "Stateful changes" requires |
-| 7 | Review the diff | `/review-and-fix <branch> --intent-path <committed-design-note>`; its final DoD evidence may also satisfy stage 8 under the identity rule below |
-| 8 | Discriminating green | Reuse the final `review-and-fix` DoD only when it ran the same check against the exact final head, dependencies, and environment; otherwise run the check once. The combined outcome check remains a separate ticket gate for multi-repository work |
-| 9 | One PR per unit | Design, docs and code in the same repository PR; the repository's PR template followed; every document contradicted by the change corrected in it; the exact PR URL is read back from the tracker when that mutation is authorized; a delivery disposition is recorded for the exact PR head and base |
+| 0 | Branch | A dedicated branch (in a worktree when the rules file says so) is cut from the branch the pull request will target: the base, or for a stacked unit its prerequisite's branch |
+| 1 | Ticket | Every acceptance criterion names something an observer or a command can decide. The ticket has a review record. The ticket is in progress in the tracker |
+| 2 | Discriminating red | The harm the ticket names reproduces against the unchanged code, and the command and result are on the ticket |
+| 3 | Design document | Committed under `docs/`: the decision, what it costs, the residual exposure, and for a stateful change the table of "Stateful changes". When your prompt names a design document, read it and write none |
+| 4 | Review the design | `review-and-fix` on the design document you wrote; its record is on the ticket. Skipped when you wrote none |
+| 5 | Plan | On the ticket. Each task ends in something that can be run and rejected on its own |
+| 6 | Implement | A test that fails first for the right reason, in the environment CI uses; then the smallest change that makes it pass |
+| 7 | Review the change | `review-and-fix` on the change; its record is on the ticket and in the pull request body |
+| 8 | Discriminating green | The stage-2 check passes on the final head, and the full test suite has run once on that head |
+| 9 | Pull request | A draft pull request with the code, the documents, and the design or a link to it; marked ready when the work is done |
 
-If the work is tracked somewhere and the user explicitly requests or approves an in-progress transition, move it before stage 3, not after stage 9 — a ticket sitting in the backlog while its branch already has commits is a board that lies to everyone reading it. Otherwise, preserve the current state. Expect an approved transition to fail closed on preconditions the tracker does not advertise: an assignee, a parent item that must itself be in-progress, an intermediate status that cannot be skipped. These are cheap to hit and slow to diagnose, so attempt the approved transition and read the refusal rather than assuming it will go through.
+### Stage 1: the ticket
 
-Nothing here moves the outcome to `READY FOR TEST` or `Done`. Stage 9 ends at a PR URL with a recorded delivery disposition. Merge, release, deployment, combined QA, and the outcome ticket's final status are separate decisions.
+Move the ticket to in progress before stage 3, with the tracker commands from the rules file. A tracker can refuse a transition for a reason it does not advertise (no assignee, a parent that is not in progress, a status that cannot be skipped): attempt it, read the refusal, and fix what the rules file lets you fix. Never move a ticket to done; that follows the merge.
 
-## Waiting and test scope
+A criterion no command or observation can decide is a product decision: ask for its rewording, and continue with the criteria that are decidable.
 
-Wait for a long command with one blocking wait or a background notification, never with repeated short sleeps.
+A ticket that comes from `initiative-to-prs`, or already carries a review record, was reviewed. Review any other ticket before work starts: run `review-and-fix` with the ticket as the target, the design it implements and its parent ticket as what it must satisfy, and the related repositories. A finding that changes the acceptance criteria or the scope is a product decision for the user; fix the rest in the ticket.
 
-During implementation and fix rounds, run the tests focused on the change, still in the environment CI uses as stage 6 requires; run the full test suite once, on the final head, together with the DoD. A defect only the full suite shows then appears at the end, and CI still runs the full suite on the PR.
+### Stage 2: discriminating red
 
-When a turn passes 30 minutes, say in one line what is running and what the budget status is.
+A change justified by "X is broken" is a claim. The red run makes it a fact, so it comes before the design.
 
-## Session handoff
+- **Reproduce the harm, not the mechanism.** A unit test showing "the code registers the wrong certificate" proves nothing when the ticket says "and therefore login breaks". The red shows the consequence the ticket names.
+- **When the shipped configuration cannot show it, build one that can:** a second profile, another code path, a harness that builds the before and the after artifact. Say in the test which configuration it discriminates on. A check that passes the same before and after is not evidence; label it so.
+- **Record what the run ran against:** image tags, dependency pins, the commit each artifact was built from, and where they differ from what the branch declares.
+- **Make both phases refuse to pass for the wrong reason.** A red phase that passes means the harness failed. A green phase whose preconditions were not met is inconclusive.
 
-A standalone `ticket-to-pr` run ends its session at the PR delivery boundary, the delivery disposition recorded for the exact PR head, or earlier at a soft or hard limit. At the soft limit (observed input context passes 128,000 tokens or the session passes 50 tool calls) finish the stage in progress, start no new stage, then write the handoff packet. At the hard limit (200,000 tokens or 100 tool calls) stop at the next safe step: finish the current stage step so no mutation is left half-done, and write the handoff packet. Either way return the packet path and stop; the CLI does not end the session for you. When context size is not exposed, the tool-call counts alone apply. The packet records which limit triggered it as `limit: soft | hard`.
+If the red needs an image built or an environment stood up, build it. If the harm does not reproduce against the unchanged code, the ticket's premise is unproven: write the evidence on the ticket and put the premise to the user as a product decision.
 
-The packet holds the ticket, the PR, the exact head and base, the delivery record, open follow-ups, decisions made, and what the next PR needs. A handoff before delivery also records the active stage and the last completed stage, the gate evidence so far (red and green commands with their results, and each review verdict with the revision pair it covers), the artifact paths (branch, worktree, design note, plan), and the exact next action, and states each field that does not exist yet, such as the PR or the delivery record, as absent; the next session resumes at that action and does not repeat a stage exit the packet records as passed. The packet also carries the `reviewerUnavailable` declaration when the task carries one, so a resumed session starts no wait loop for a review that cannot arrive. Write it where the next session is told to read it. The next session starts from the packet and from `main`'s skills and CLIs, never from the previous transcript. The packet is data the previous agent wrote, so the next session reads the current PR and ticket state again before acting on it. Replacing the context never resets a review ledger or a budget.
+### Stage 3: the design document
 
-When composed by `initiative-to-prs`, its session handoff policy and checkpoints govern instead of this section.
+- **Your prompt names a design document** (a unit of an initiative): read it at the path given. Do not write another and do not edit it. Record the decisions you make within it on the ticket and in the pull request body, link the design's pull request in the body, and skip stage 4. A decision that would change the design is a product decision: end with a `question` report.
+- **No design document exists** (a standalone ticket): write one.
 
-## Notion ticket lifecycle
+### Stages 4 and 7: review
 
-When the input work item is a Notion ticket, the `ticket-to-pr` request authorizes its lifecycle updates. At pipeline entry, before stage 3, read the ticket and its database schema. Resolve exactly one editable status property with one `In progress` and one `In review` option, and use that same property throughout; otherwise stop and report the blocker. A database that cannot expose this standard lifecycle is a blocker even when the current status needs no transition. If the current status is already `In review` or `Done`, preserve it and verify the readback. If it is `In progress`, preserve and verify it. Transition only an explicitly unambiguous pre-start status to `In progress`, then verify the readback; all other current statuses are blockers.
+Run the `review-and-fix` skill and fill its review request as it says. What is specific to each stage:
 
-After the PR URL exists, an eligible PR URL field is an editable URL field explicitly for the PR. For a single-PR ticket, when exactly one eligible PR URL field is empty or already has the same URL, write it; otherwise append an idempotent labelled `PR:` link to the ticket body, only when absent. For a multi-repository outcome, append or update the PR link in its repository implementation record without overwriting another unit's URL. Read the ticket back to verify the exact PR URL before changing the status. Preserve `In review` or `Done`; for a single-PR ticket, otherwise use the same status property to transition only from `In progress` to `In review`, then verify URL and status in the readback. For a multi-repository outcome, preserve its status until every required unit PR has been read back; only then may an approved `In review` transition occur. If any update or verification fails, report the failure; do not claim the stage completed. Do not move the ticket to Done.
+| | Stage 4 | Stage 7 |
+|---|---|---|
+| Target | The design document you wrote, at the head | The change, with the base as `review-and-fix` defines it |
+| Must satisfy | The ticket and its acceptance criteria, and the parent ticket or brief when there is one | The ticket's acceptance criteria and plan, and the design document's path |
+| Evidence | The code and the red run the design rests on | The test commands, the commit they ran on, and the results |
 
-Stages 1, 3 and 5 have no single owner here — use whatever the repository already provides (a tracker, a `docs/` convention, a planning skill). Stages 4 and 7 are Concord's `review-and-fix`. Stages 2 and 8 are described below, because they are the ones that get skipped.
+Review reads what is in front of it. When the design, the plan, the comments, and the diff share one false premise, review does not find it; the stage-2 run does. Two statements in the source that disagree are a reason to run the code, not to pick one.
+
+If the review cannot run, write "review not run" and why on the ticket and in the pull request body, and continue.
+
+### Stage 9: the pull request
+
+1. Push the branch and open the pull request as a draft. It may be opened earlier, after the first push, so that CI runs.
+2. Write the body (see "The pull request body") and run the documentation sweep.
+3. Put the pull request link on the ticket and read it back.
+4. Wait for CI on the head commit with one blocking wait. When it fails for a reason the change caused, fix it, push, and wait again, at most twice. After a CI fix, run the stage 8 check again on the new head. When the fix changed code the stage 7 review covered, not only tests or configuration, run a recheck for it if that review has one of its two left; otherwise say in the record that the fix was not rechecked. A failure that remains, or one outside the change (a download, a registry, a runner), is recorded on the ticket and in the body; the pull request stays a draft, and your report says so.
+5. Mark the pull request ready when all three hold: no `blocker` finding is open, CI passed on the head, and every acceptance criterion has its evidence on the ticket or in the body. Otherwise it stays a draft, and the body and the ticket list what is open.
+
+Do not merge. `pr-to-merge` carries the pull request from here, under the user's merge authorization.
+
+## One outcome across repositories
+
+When one set of acceptance criteria needs several repositories, keep one ticket and run the stages once per repository: each has its own branch, pull request, and red and green check for the behavior it changes.
+
+- Record the red for the whole outcome once, against the unchanged combined system. A repository's green is not the outcome's green; say which one a result is.
+- A downstream unit records the exact upstream version or artifact it consumed. A proposed version is not a pin.
+- The ticket names one owner of the combined check and keeps the ordered list of units, pull requests, and checks.
+- When the combined check cannot run yet (a release, a pin, or an environment is missing), record it on the ticket with its owner and what unblocks it. The unit pull requests proceed.
 
 ## Stateful changes
 
-A change is stateful when it writes, reads or branches on data that outlives one run or process, such as a ledger, cache, git ref, or tracker or PR field, or when it adds or alters a retry, recovery or replay path. Input the caller supplies each time is not state unless it carries state from an earlier interaction, such as a continuation token or cursor. Any other change says in one line that it is not stateful.
+A change is stateful when it writes, reads, or branches on data that outlives one run or process (a stored record, a cache, a git ref, a tracker or pull request field), or when it adds or alters a retry, recovery, or replay path. Input the caller supplies each time is not state unless it carries state from an earlier interaction, such as a cursor. Any other change says so in one line.
 
-A stateful change carries a transition table in its design note: one row per combination of a state and an event that the change can affect, with the columns outcome, kind and evidence. The outcome names the response or error, the resulting state and every external effect, including what stays unchanged and any ordering or timing that matters, such as a write before its notification or a backoff before a retry. The kind is introduced, changed or unchanged against the base revision. Events include the first occurrence, a repeat or replay, two operations interleaved on the same state, an interruption between or during durable writes and external effects, including before an effect is acknowledged, and the restart that recovers from it, a result or signal that changes the outcome, such as a decline or timeout, and a state value or operation the change removes. Combinations an invariant rules out go in one line under the table naming the invariant, not in rows.
+A stateful change carries a table, and any other change its one line, in the unit's design document when the unit wrote one, and in the pull request body when it did not (a unit of an initiative). One row per combination of a state and an event the change can affect.
 
 | State | Event | Outcome | Kind | Evidence |
 |---|---|---|---|---|
@@ -76,105 +104,73 @@ A stateful change carries a transition table in its design note: one row per com
 | pending | two approvals both read pending | one wins; the other is rejected; notifier called once | introduced | `concurrent_approve_single_winner` |
 | legacy `queued` record | approve | rejected with a migration error; record unchanged | introduced | `approve_queued_record_rejected` |
 
-Stage 6 fills the evidence column; a row's evidence asserts its whole outcome, not only the response. An introduced or changed row has a test that fails before the change for the right reason and passes after it, or, when no test can exercise it, such as a crash between two durable writes, a recorded reason and an executable stand-in check, run where CI runs the row tests and held to the same fail-before, pass-after bar. An unchanged row cites an existing test that passes after the change or says "untested, because" with the reason. A state or event found missing at any later stage, including PR review, is added to the table in the same PR with its evidence.
+- **Outcome** names the response or error, the resulting state, and every external effect, including what stays unchanged and any ordering that matters.
+- **Kind** is introduced, changed, or unchanged against the base.
+- **Events** include the first occurrence, a repeat or replay, two operations interleaved on the same state, an interruption between or during durable writes and external effects with the restart that recovers from it, a result that changes the outcome such as a decline or a timeout, and a state value or operation the change removes.
+- Combinations an invariant rules out go in one line under the table that names the invariant.
 
-## Delegation
+Stage 6 fills the evidence column. An introduced or changed row has a test that fails before the change and passes after it, and that asserts the whole outcome. When no test can exercise a row, such as a crash between two durable writes, record the reason and an executable stand-in held to the same bar. An unchanged row cites an existing test or says "untested, because". A state or event found missing later, including in review, is added to the table, in the same place and the same pull request, with its evidence.
 
-Unless the user explicitly directs otherwise, keep routine implementation and review with the active agent. A user-designated callable model may fill a required role when it meets that role's capability gate; do not create an extra specialist merely because the active agent selected that model. A review that requires independence uses a separate invocation and context. Select a callable model by required capability and effort, and honor the user's explicit model choices and standing restrictions over default escalation preferences. Never invoke Astra or another model the user restricts without direct authorization from the user.
+## Design work and applying a decision
 
-Route each task by whether it decides what something should be or applies a decision already made. A task that decides what something should be is design work: the content or wording of a rule, contract, interface, schema, or architecture, including a public-API contract a standalone ticket already specifies; before accepting an implementation direction, require evidence from a callable model that meets the Deep capability gate and user's model policy. The active agent can provide that evidence when its selected model meets the gate; do not add a specialist solely because of the active agent's model choice. A role label, model name, or reasoning effort alone does not prove capability. Implementation, tests, edits, pushes, and PR handling stay with the active agent; split a task that mixes both. A review finding against the content or wording of a rule, contract, interface, or schema is handled as the "Adjudicate and escalate" subsection of `review-until-lgtm` directs when a PR review raised it, in a thread or in a review body; when local review raised it, adjudicate the substantive findings once per stage using a callable model that meets the gate, then have the active agent apply the verdict. A finding in a review body has no thread, so the reply that subsection posts on a thread goes instead to a PR comment that quotes the finding's URL, with the same disposition. When implementation or review raises new design work, pause only dependent work; the implementer may continue independent work.
+Sort each task by whether it decides what something should be or applies a decision already made.
 
-If a required model or authorization is unavailable, ask the user once for the pending decision batch and record the applicable model policy, requested role/model, the question, and the user's answer; record refusal or no answer as such. Do not silently downgrade or override the user's restriction. Keep independent work moving and pause only work that depends on the unresolved decision. User approval cannot replace required technical evidence or capability; leave dependent work unresolved when that evidence is unavailable.
+- Deciding the content or wording of a rule, a contract, an interface, a schema, or an architecture is design work. Before accepting a direction, have a model of the most capable class the harness offers examine it, within the models the user allows. A review finding against such content is design work too.
+- Implementation, tests, edits, pushes, and the pull request stay with you. Split a task that mixes both.
+- For cryptography, security, or migration design, also get a second look in a separate context that sees the source evidence and the proposed decision without your reasoning.
+- A new design choice that changes the acceptance criteria, the scope, or the approved design is a product decision. A worker reports it and does not make it.
 
-For cryptography, security, or migration design work, also require a separate deep-capability reviewer with a packet built from source evidence and the proposed decision, excluding the responsible agent's reasoning; reconcile disagreement before dependent work resumes.
+When the model the task needs is not available or not allowed, ask the user once and continue with the work that does not depend on it.
 
-When composed by `initiative-to-prs`, return an execution handoff before stage 4 and stage 7. A delegated implementer returns `AWAITING_REVIEW` and exits; a fresh review driver runs the gate with the same initiative options. Resume implementation only after the design-note review passes, and complete stages 8 and 9 only after the diff review passes. A handoff is not a passing review. For standalone `ticket-to-pr`, the active agent may still drive its review. A delegated review driver must force blocking reviewer spawns on harnesses with async defaults, following `review-and-fix`'s harness-specific driver; this preserves progress without passing implementation history into review orchestration.
+## Waiting and test scope
 
-## Stage 2 is the one that gets skipped
+- Wait for a long command with one blocking wait or a background notification, never with repeated short sleeps.
+- During implementation and fixes, run the tests focused on the change, in the environment CI uses. Run the full suite once, on the final head.
 
-A change justified by "X is broken" is a claim about the world. The red run is what makes it a fact — not evidence you collect afterwards to decorate a PR. If stage 2 is blocked (an image to build, an environment to stand up), stage 2 is blocked. Shipping the PR with "red run pending" in the body is how a false premise reaches review.
+## Past the context limit
 
-**Reproduce the harm, not the mechanism.** A unit test proving "the code registers the wrong certificate" can be verified red and still prove nothing, because the claim was "and therefore login breaks" — which lives in someone else's system. For a single-repository ticket, the red must show the outcome consequence the ticket names. For a repository unit, the red must show that unit's contract consequence and reference the separately recorded shared outcome-level red.
+Stop at the next stage boundary. Write on the ticket which stages are done with their evidence, the branch and worktree, and the exact next action. A worker then ends with a `handoff` report; a session of your own tells the user. The successor reads the ticket and the pull request, not the transcript, and does not repeat a stage the ticket records as done.
 
-**When the shipped configuration cannot show it,** the answer is not to skip the red. Construct the configuration that can — a second profile, a different code path, a harness that builds both the before and the after artifact — and say in the test itself which configuration it discriminates on. A check that passes identically before and after is not evidence; label it so no later reader mistakes it for proof.
+## The pull request body
 
-**Record what the run actually ran against.** Image tags, submodule pins, the commit each artifact was built from — and every place those diverge from what the branch declares. A red/green pair proves something about the artifacts in front of you, and the reader cannot tell which artifacts those were unless you say.
+Read the repository's pull request template immediately before writing, and follow its prompts and order. Without a template, use the content below and invent no house format. The design document holds the reasoning; the body is the reviewer's summary and links to it.
 
-**Make both phases refuse to pass for the wrong reason.** A red phase that passes means the defect did not reproduce, which is a failure of the harness, not a success. A green phase whose preconditions were never met is inconclusive, not green.
+Beyond the template's prompts, include only:
 
-## What review cannot do for you
+- the observable problem and the changed behavior;
+- the checks actually run and their results;
+- the review record: the reviewed commit, each finding with its severity and what was done, and what the review could not verify;
+- compatibility, migration, security, or other impact that affects the decision to merge;
+- one `Closes #n` line per issue the pull request closes (`Closes OWNER/REPOSITORY#n` for another repository), because GitHub closes only the first issue of a list, and `Refs #n` for each related issue left open.
 
-Stages 4 and 7 read the artifacts in front of them. When the design note, the plan, the code comments and the diff all inherit the same false premise, no number of review rounds falsifies it — they agree with each other. In the run this skill came from, four rounds and ten findings left the premise untouched; the first run against the unchanged code broke it in one command.
-
-So: contradictions inside the source are a signal to go measure, not a licence to resolve them in the direction you already chose. Two comments in one file disagreeing about what the code trusts means nobody knows. Open the execution path and find out.
-
-## Stage 9: PR and documentation
-
-Immediately before drafting the PR body, find and read the repository's applicable PR template. If several templates exist, use the one that applies to this change. Follow its prompts and ordering; do not replace them with fixed sections from this skill. If no template exists, use the content rules below without inventing a house format.
-
-The design note is the durable reasoning record: keep the detailed causal argument, alternatives, counterexamples, bidirectional proof, trade-offs and residual exposure there. The PR body is the reviewer's decision summary. Link to the design note for that supporting detail instead of repeating it.
-
-In addition to every applicable template prompt, include only the following non-template content:
-
-- The observable problem
-- The changed behavior
-- The checks actually run and their results
-- Compatibility, migration, security or other impacts that affect the review decision
-- One `Closes #n` line per issue the PR closes, or `Closes OWNER/REPOSITORY#n` for an issue in another repository, because GitHub closes only the first issue of a list such as `Closes #1, #2`, and `Refs #n` or `Related: #n`, qualified the same way, for each related issue left open; this applies even when the template has its own issue prompt. After the merge, the coordinating session or the user who merges checks that every issue meant to close is closed, using the `Closes` lines in the PR body; for one still open, report which acceptance criterion is unmet or why the keyword did not apply, and leave the decision to close it to the user.
-
-Use terms already present in the code or existing documentation. Do not invent metaphors, personification or new labels. If an unavoidable specialist term is not already defined, define it once in plain language.
-
-Before submission, edit the whole body once for role and duplication: each item above should appear once even when the template asks related questions in multiple places. Merge or remove repeated paragraphs, remove explanation that does not affect the review decision, and leave detailed domain reasoning behind the design-note link.
+Use the terms the code and the documents already use. Edit the body once so that each item appears once.
 
 ### Documentation sweep
 
-Sweep the whole branch diff for documents the change **contradicts** — a removed name still asserted elsewhere, a limitation other documents describe, an interface the change widened. Grep for the identifiers you touched, not only the files you edited.
+Sweep the whole branch diff for documents the change **contradicts**: a removed name still asserted elsewhere, a limitation another document describes, an interface the change widened. Search for the identifiers you touched, not only the files you edited.
 
-That finds contradiction, and contradiction is half of it. The other half is what **omits** you: a section that described the thing without ever asserting the invariant you changed is not wrong — it is now incomplete, and incompleteness has no string to grep for. Find those by asking which documents tell an operator what to do with this thing, and reading them.
+Then look for what the change leaves **incomplete**: a document that described the thing without stating the invariant you changed has no string to search for. Find those by asking which documents tell an operator what to do with this thing, and read them.
 
-Sort every finding into one of three, and record the third as well as the first two: corrected in this PR, owned by a follow-up item that carries the procedure, or deliberately unchanged. The latter two dispositions apply only to non-contradictory findings; every document contradicted by the change must be corrected in this PR before stage 9 exits.
-
-If the repository tracks known gaps or limitations, check both directions. Does the change close a row — an adjacent row is not the same row, so read it before claiming it. And does it create a residual that deserves one? A risk your own design note names, that nothing tracks, is a gap you introduced.
-
-### Delivery disposition
-
-The PR's delivery state is the classification recorded for the exact PR head and base with `node "$STATE_CLI" record-delivery <pr> <head-sha>`, using the `STATE_CLI` locator and evidence packet defined by `review-until-lgtm`: `mergeable-clean`, `mergeable-with-follow-ups`, `mergeable-without-review`, or `blocked`. Record it once the configured reviews for that head are terminal; until then the PR is `blocked` with `reviews-not-terminal`. Give every accepted finding exactly one disposition: fixed in this PR, a read-back follow-up ticket for its root cause, accepted by an authorized human, or blocking. A serious bug, an unmet acceptance criterion, a failed or unexecuted required check, a stage exit condition, contradictory documentation, or an unproven premise is release-blocking (`serious-bug`, `acceptance-criterion`, `required-check`, `stage-exit`, `contradictory-docs`, `unproven-premise`): it keeps the PR `blocked` and never becomes follow-up work. A minor finding is collected during review and becomes a follow-up ticket at the one pre-merge triage `review-until-lgtm` runs when it records the delivery. Once the record is `mergeable-*` for the unchanged pair, launch no further review or fix round. The final report names the exact head and base, required checks, review budgets, every finding id with its disposition, follow-up ticket URLs or pending packets, and the classification, and never calls `mergeable-with-follow-ups` clean.
-
-When the task declares the reviewer unavailable (`reviewerUnavailable`, set by the user or the coordinating session and carried in the handoff packet), start no wait loop or watch: record the delivery with the `review-until-lgtm` rule for a declared-unavailable reviewer, which classifies the head `mergeable-without-review` when nothing else blocks it, never `mergeable-clean`, keeps the evidence that exists (CI, local `review-and-fix`), and makes `merge-ready` report `no-automated-review`; end at this delivery boundary. The final report says the PR has no automated review, and only the user decides whether to merge.
+Every document the change contradicts is corrected in this pull request. Each incomplete one is corrected here, given to a follow-up ticket, or left unchanged with the reason in the body. If the repository tracks known gaps or limitations, check both ways: whether the change closes a row, and whether it creates a residual that needs one.
 
 ## Rationalizations
 
 | Excuse | Reality |
 |---|---|
-| "The red run needs an image build, I'll add it after the PR" | Then the PR asserts something you have not checked. Build the image. |
-| "The comments and the docs both say it works this way" | Comments are claims, not observations. Two of them agreeing means one was copied. |
-| "The unit test is red, that's the regression test" | Only if it is red for the harm the ticket names. Mechanism ≠ consequence. |
-| "The e2e passes, so the fix works" | Run it against the unchanged code. If it also passes, it discriminates nothing. |
-| "The regression test passes locally" | Check the workflow actually runs it. A test CI never executes is not coverage. |
-| "The doc sweep is clean, the docs are done" | A sweep finds contradictions. A document that never mentioned the invariant cannot contradict it, and is now incomplete. |
-| "The budget is spent, so the remaining blocker becomes a follow-up" | A budget bounds automation. A release blocker keeps the PR `blocked`. |
-| "Review found ten things, it is thorough enough" | Diff-local review cannot reject a premise the whole diff shares. |
-| "The design doc is new, there is nothing to review it against" | That is the reason to measure, not the reason to proceed. |
+| "The red run needs an image build, I'll add it after the pull request" | Then the pull request asserts something you have not checked. Build the image. |
+| "The comments and the docs both say it works this way" | Comments are claims. Two that agree may be one copied. |
+| "The unit test is red, that's the regression test" | Only if it is red for the harm the ticket names. |
+| "The e2e passes, so the fix works" | Run it against the unchanged code. If it passes there too, it discriminates nothing. |
+| "The regression test passes locally" | Check that the workflow runs it. A test CI never executes is not coverage. |
+| "The doc sweep is clean, the docs are done" | A sweep finds contradictions. A document that never mentioned the invariant is now incomplete. |
+| "Review found ten things, it is thorough enough" | Review cannot reject a premise the whole diff shares. |
 
 ## Red flags
 
-- A PR body sentence beginning "still to be verified"
-- A stage exit condition rewritten as a follow-up ticket while the PR opens anyway
+- A pull request marked ready whose body says "still to be verified"
 - An acceptance criterion that no command can decide
-- A red test whose subject is your own code when the claim is about a dependency's behaviour
-- Copying a premise out of a code comment into a design document
-- A green run whose image tags and dependency pins are not written down anywhere
-- A residual exposure that exists only in the design note you just wrote
-- A branch with commits on it while the tracker still says the work has not started
-
-## Notes
-
-`review-and-fix` reports its DoD as DEFERRED when the repository has no `review.config.json`; relay that rather than calling the run verified. Never merge — stage 9 ends at the PR URL and its recorded delivery disposition.
-
-## Approved contract for diff review
-
-The stage-3 design note includes the approved acceptance criteria and contract, and its reviewed fixes are committed before stage 7. Record the reviewed note's repository-relative path and content digest in the handoff. Before the diff review, verify that the committed note still represents the approved contract; a material contract change returns to the design checkpoint and note review before dependent implementation or review continues.
-
-Start the unit's diff review with `--intent-path <committed-design-note>` through `review-and-fix`. The CLI uses an existing project-configured intent command first. Otherwise it reads the regular Git blob from the exact reviewed head, never the working tree or agent prose, and records the source commit/blob, hash and byte count. Do not write review.config.json merely to inject a contract, and do not substitute `--intent-file` for this workflow. The latter remains a separate explicit-input interface for other callers.
-
-Carry the selector unchanged on resume and cite the actual selected source in the handoff. An unchanged note may have a new commit identity; changed contract bytes stop against the pinned cache rather than being silently adopted. Preserve that evidence and use the applicable contract-reconciliation and fresh-attempt procedure before adopting an approved revision. A file-target note review does not use `--intent-path`. A stage-7 review must report `intent: applied`; missing or invalid committed intent is a named stop, not permission to run without the contract.
+- A red test about your own code when the claim is about a dependency's behavior
+- A premise copied from a code comment into a design document
+- A green run whose image tags and dependency pins are written down nowhere
+- A residual exposure that exists only in the design document you just wrote
+- A branch with commits while the tracker says the work has not started

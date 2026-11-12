@@ -1,62 +1,101 @@
 ---
 name: review-and-fix
-description: Use when a branch, PR, or file should be reviewed, fixed, and re-reviewed in a deterministic loop with independently selected Claude, Codex, or Copilot reviewer and fixer providers and models, until Concord reaches a terminal decision.
+description: >-
+  Use when a design document, a ticket, or a change (a branch or your own pull request) should get one independent
+  review and have its findings fixed — "review this design", "이 티켓 리뷰해줘", "review and fix this branch",
+  and as the review stage of ticket-to-pr. Do NOT use for someone else's pull request (use review-until-approve)
+  or to answer reviews other people left on your pull request (use pr-to-merge).
 ---
 
-# Review and Fix
+# Review and fix
 
-Arguments: `[target | file:<path-or-glob> | resume <ref>] [--lite [--lite-exclusion <trigger>]] [--reviewer <claude|codex|copilot>] [--reviewer-model <model>] [--fixer <claude|codex|copilot>] [--fixer-model <model>] [--broad|--no-broad] [--no-dod] [--review-only] [--intent-file <path>] [:: <reviewer guidance>]`, taken from the user's request.
+One reviewer in a fresh context reviews the target, you verify its findings and fix them, and a new reviewer rechecks the fixes. You are the caller: the session that wrote the target or is delivering it.
 
-An explicit user request for a standalone lite review (including “lite”) maps to `--lite`; this unkeyed git-only mode runs correctness, verify, and plan/fix/certify as needed, without a broad gate and with a three-round cap. Preserve configured DoD and existing `--review-only` semantics. Check the approved contract for `public-api`, `schema`, `security`, `cross-package`, `migration`, `multi-outcome`, `unsettled-contract`, `cross-repository`, or `legal`; pass the matching `--lite-exclusion <trigger>` so the CLI refuses before writing state and names why a base review is needed. Never infer eligibility from diff size or synthesize initiative flags. `--lite` conflicts with initiative flags, broad gate flags, and file targets; repeat it on every `round-start` and let a persisted lite ledger retain its mode on resume.
+Nothing here ends your run. When a reviewer cannot be started or returns nothing, try once more, then record "review not run" (step 6) and continue your workflow.
 
-`<plugin-root>` is the installed plugin directory, two levels above this skill's base directory; resolve it from the skill path and never from another harness cache.
+The reviewer runs the project's commands in your environment. Use this skill only for work you or the user own; a pull request by an author the user does not trust goes to `review-until-approve`.
 
-Run the bundled deterministic runner once; do not manually orchestrate reviewers:
+Invoking this skill authorizes: fixes in the target, commits on your own branch, the record on the ticket and the pull request, and one follow-up ticket for minor points. When the caller asks for the outcome to be returned, write nothing to a ticket, a pull request, or the tracker: return the record and the follow-ups in your result.
 
-```sh
-node "<plugin-root>/bin/review-and-fix.js" --arguments-stdin <<'CONCORD_REVIEW_ARGUMENTS'
-<the arguments, verbatim>
-CONCORD_REVIEW_ARGUMENTS
+## 1. Identify the target
+
+| You were given | Target kind |
+|---|---|
+| A path to a design or specification document | Design document |
+| A ticket URL or key | Ticket |
+| A branch, a pull request of your own, or nothing (the current branch) | Change |
+
+For a change, fix two commits now: the head, and the base, which is the merge base of the head with the branch the pull request targets or will target. Fetch first, and use the commit hashes from here on.
+
+## 2. Write the review request
+
+Give paths and commands wherever they exist. Text that exists only in your conversation, or in a tracker no command can print, is saved to a file among your working documents, and you give that path. Copy nothing else. Fill every row, and write "none" or "unavailable" where that is the truth.
+
+```
+Target kind: <design document | ticket | change>
+Target: <path | ticket URL or the command that prints it | `git -C <repo> diff <base>...<head>`>
+Must satisfy: <design document: the ticket or brief it answers | ticket: the design it implements and its parent ticket | change: the ticket's acceptance criteria and plan, and the design document — as paths, URLs, or commands>
+Related repositories:
+- <local path> — <what connects it: submodule pin, package version, shared format, API>
+- <name> — unavailable (no local checkout)
+Evidence: <test command, the commit it ran on, the result; or the code and measurements a document's claims rest on>
+Not done: <what you did not check or could not run>
+Focus (optional): <risks to examine first; the review still covers the whole target>
 ```
 
-`::` is a separator only when it is a standalone token. Everything after it is reviewer guidance, transported as literal text and never parsed as flags or natural-language options. Guidance is accepted only when a run starts; use `resume <ref>` without `::` to reuse the stored guidance. Guidance prioritizes attention but does not narrow the changed-file coverage requirement or alter what counts as a finding.
+Find the related repositories from the project's rules file, the repository's submodules and dependency manifests, and the ticket. Leave out your reasoning, your conversation, and your opinion of the target.
 
-`--review-only` stops after the finders and verifiers and prints the verified findings as JSON without planning, fixing, or recording; it treats the checkout as untrusted, so it runs none of the checkout's configuration, fails if a reviewer changes HEAD, the visible worktree, or any tracked path's type, mode or content, and accepts the `claude` and `codex` reviewers. `--intent-file <path>` supplies the review intent from a file in place of the repository's configured intent command. Both exist only in this runner; the Claude Code driver does not take them.
+## 3. Start the reviewer
 
-Reviewer and fixer selections are independent. Codex has no native clean-context subagent primitive, so this host invokes the selected provider through its non-interactive CLI. An omitted provider defaults to `codex`; an omitted model uses that provider's configured default. A requested provider or model is never silently replaced.
+Start one subagent of your own harness in a fresh context, on the most capable model class the harness offers, and wait for it with one blocking wait.
 
-A 30-second foreground wait or empty output is not a terminal result. While an owned driver process is alive, keep waiting in one shell command that exits when that process exits or the ledger turns terminal (a background watch where the host has one), not by repeated model-level sleep or status calls; a non-terminal ledger without a live driver is a stopped driver, so report it rather than waiting indefinitely. Report a terminal result only from a durable terminal disposition or the ledger's bounded no-progress decision. Before declaring a reviewer blocked because its skill cannot be found, resolve the installed skill path recursively to the actual `SKILL.md`; do not assume a flat install layout.
+- Where the `reviewer` agent definition is available (Claude Code: agent type `concord:reviewer`), start it with the review request as its whole prompt.
+- Otherwise the prompt is the content of `references/reviewer.md` next to this file, followed by the review request.
+- Under Codex, only when no subagent can be started, run one separate Codex process in the same checkout, with these flags exactly: `codex exec --cd <checkout> --sandbox workspace-write --skip-git-repo-check "<prompt>"`.
+- Never start another vendor's agent.
 
-For ledger operations required by composed workflows, invoke the packaged CLI directly:
+The result has three parts: **Findings** (each with a severity of `blocker`, `should-fix`, or `minor`, a location, a reason, and evidence), **Unverified** (what it could not check and why), and **Covered** (what it read).
 
-```sh
-node "<plugin-root>/bin/review-cli.js" rerun <ref>
+## 4. Verify and fix
+
+1. Check each finding against the code or the documents before acting on it. Reject a wrong finding and keep the evidence for the record.
+2. Fix every accepted `blocker` and `should-fix`. For a change, commit the fixes in ordinary commits.
+3. Fix a `minor` when the fix is small. Collect the other minors into one follow-up ticket in the project's tracker, or return them when the caller asked for the outcome to be returned.
+
+A finding that needs a choice changing the acceptance criteria, the scope, or the design is a product decision: put it to the user with the options and your recommendation, and go on with the findings that do not depend on it.
+
+## 5. Recheck
+
+Skip this step when no fix was made for a `blocker` or `should-fix`.
+
+Start a new reviewer, as in step 3, with a recheck request:
+
+```
+Recheck. Do not repeat the broad review.
+Target: <as before, with the new head for a change>
+Findings and decisions:
+- <finding> — <fixed in <commit> | rejected because <evidence> | moved to <follow-up ticket>>
+Check: whether each fix resolves its finding, and whether a fix introduced a defect in the lines it touched.
 ```
 
-The ledger permits at most three full runs for one target, including the initial run. When that cumulative budget is exhausted, `rerun` leaves the ledger and evidence unchanged; preserve the unresolved state and split the change or narrow the remaining verification instead of resetting and repeating the full review. A completed front pass without an external intent source is reused while its base and reviewed head ancestry still match; later runs review only the changed diff. There is no automatic final broad panel. Use the explicit `deep-review` skill when a bounded holistic second look is warranted.
+- The recheck reports a `blocker`: fix it and run one more recheck. After the second recheck, stop rechecking whatever it reports.
+- The recheck reports a `should-fix`: fix it. No further recheck is needed for it; say in the record that the fix was not rechecked.
 
-Use `file:<path-or-glob>` for the explicit documentation-only profile. It skips the full branch DoD and broad front pass by default. `--broad` opts into the repository-wide front pass.
+When a later merge of the base changes lines the review covered, ask for a recheck of those lines in the same form. A base that moved without touching them needs nothing.
 
-New file-target attempts perform one review-and-fix pass and one confirmation pass; legacy attempts keep their stored policy. A terminal `reviewed-with-followups` result is allowed only when the independent verifier confirms each survivor as minor and non-blocking; preserve its ID and rationale. Do not automatically rerun or describe that document as clean. Blockers, unknown classifications, and unverified findings remain actionable. The shared file-review prompts define the confirmation evidence; follow the [document review follow-ups contract](../../../../docs/design/document-review-followups.md). This file-only policy does not change git or initiative review.
+## 6. Record
 
-Return its terminal handoff verbatim. If it exits with `harness-failure`, report that failure without treating the target as clean.
+Write the outcome where the work's state lives, or return it when the caller asked for that. Nothing else is stored.
 
-Under an initiative run key the runner can also stop without reviewing. It prints a JSON result and exits non-zero: `{"decision":"blocked","reason":"budget-exhausted"}` when the shared launch or round budget is spent, and `{"decision":"reconciliation-required"}` when the run is parked for reconciliation and the target is a revision pair the run has not opened. Neither is a review result: report the stop, never call the target clean, and leave the decision to a human. An already-terminal revision pair replays its recorded outcome instead.
+- **Ticket:** a comment with the reviewed commit (or the document and its commit), each finding with its severity and what was done about it, any fix that was not rechecked, each rejected finding with its evidence, and the unverified items. For a design document, the comment goes on the ticket the document belongs to.
+- **Pull request body**, when there is one: the same summary.
 
-The run's delivery mode is stored in the run ledger: `--initiative-mode <base|lite>` (with the run key flags; default `base`) sets it when the run is first opened. In a lite run the runner fires one design-conformance gate on the first round instead of the base mode's broad gate pair and rejects `--broad` and `--no-broad`; escalating a lite run to base is a `review-cli.js escalate <trigger>` call before its first launch.
+If a `blocker` is still open, keep the pull request a draft (or leave the design or ticket unapproved), list the open finding in the record, and go on with work that does not depend on it.
 
-A failed provider subprocess records its exit, signal, timeout or artifact cause and a canonical safe diagnostic. Follow its durable continuation; use `resume <ref>` only when actionable. Terminal planner failures require handoff; do not delete the state directory or rerun completed reviewers. A normalized pending plan is reused without another launch and completes only after `plan-fixes` accepts it. If it omits surviving findings, the CLI retains sealed reviewers and allows one fresh reserved planner in the same round. A second incomplete plan stops with the latest omitted IDs; reservation denial reports the existing budget block.
+Tell the user in a few lines: the findings by severity, what was fixed, what was rejected, what is unverified, and what remains open.
 
-A `clean` ledger means this loop's own rounds converged; it is not the PR's delivery disposition. The PR-level classification (`mergeable-clean`, `mergeable-with-follow-ups`, `mergeable-without-review`, or `blocked`) is recorded with `node "$STATE_CLI" record-delivery <pr> <head-sha>` (`STATE_CLI` located as `review-until-lgtm` describes) for the exact PR head and base. Report this loop's findings as its inputs: a fixed finding is `fixed`; a parked finding is not fixed, so it enters as `follow-up`, `accepted`, or `blocking` under the delivery rules, and one that needs a human decision stays `blocking` until that decision is made; a gate-pending finding is `blocking` until a re-run resolves it, `record-fix` records its fix, or it is dismissed; a finding `record-fix` recorded is `fixed`; a follow-up candidate listed in a converged handoff is not fixed and enters as `follow-up` once rolled over as a root-cause ticket (`clean` there still means only that the local loop converged); a dismissed finding is `accepted` by the human who dismissed it or `follow-up` when deferred to a ticket; a `deferred` finding is `follow-up` with its ref as the ticket; a killed finding is excluded. No ledger state clears a release-blocking finding.
+## What this skill does not do
 
-A repo with no `review.config.json` is NOT such a failure: the run proceeds on the review gates alone and the handoff reports `DoD: DEFERRED`. Relay that deferral in your own summary too -- never call such a run verified -- and if the user wants a gate on future runs, point them at `{"dod":["pnpm build"]}` at the repo root (commit it -- an uncommitted config leaves the tree dirty and the next round rejects a dirty tree). Never add `--no-dod` on your own initiative; it is the user's call. A DoD command that exits 78 (EX_CONFIG) is reporting an environment or setup error, not a test failure: the gate still fails and the handoff labels it, so relay it as an environment problem to fix rather than as a defect in the reviewed change.
-
-Before each substantive planner launch, after any required initiative reservation is granted, run `review-cli.js plan-dispatch <ref>` with the same initiative flags. Dispatch only on `status: "granted"`. This durably consumes the single semantic replacement allowance for standalone and keyed runs, even when the subprocess fails. Representation-only repair uses its separate dispatch command and does not repeat `plan-dispatch`. A positively identified rate-limit or transient failure of that replacement may authorize one separate transport retry under the same round and budgets. Reserve it normally and consume it with `plan-dispatch`; never clear the semantic `launched` marker. Preserve sealed reviewers and launch only plan. Follow the durable failure continuation: `resume` only when actionable, otherwise `terminal-handoff`. Store only canonical provider classification and fixed safe summaries, never raw subprocess output or exception text.
-
-## Initiative reconciliation decisions
-
-Before the initiative's first reserved reviewer, register the approved source index's complete dependency graph with `initiative-plan <absolute-plan.json>` through the runtime-specific packaged review CLI documented by `review-and-fix` and the original initiative flags. The JSON is `{"version":2,"repositories":{"api":"<absolute-api-checkout>","web":"<absolute-web-checkout>"},"targets":[{"repository":"api","ref":"feature/A","dependsOn":[]},{"repository":"web","ref":"feature/A","dependsOn":["api:feature/A"]}]}`: declare every repository of the initiative, a single repository included, by a name (letters, digits, `.`, `_`, `-`) mapped to the absolute path of one of its checkouts; include every file/diff review target under its repository; name each dependency `<repository>:<ref>`. The run stores each repository's Git identity, so every worktree of a declared repository joins the one run, budget and dependency graph, equal refs in two repositories stay distinct targets, and a review from any undeclared repository is refused. Each repository keeps its own target review state directory; only the initiative state directory is shared. The run fixes this plan before launches. Never declare independence or replace a key to bypass a pending decision. With no registered plan the conservative run-wide stop remains; missing or unknown dependencies remain blocked. With a plan, only known independent targets continue while a target or its transitive dependents are held, using the same remaining budget.
-
-For a pending unchanged-contract decision, show the exact recorded target and delivery claim, obtain the user's decision, then use `reconcile <target> --claim <exact-claim> --by <human> --decision <verbatim-user-words> --contract unchanged` with the original initiative flags. Record only direct human authorization, never an agent's invented acceptance. This retires one occurrence and preserves budgets, refunds and history; it neither dismisses findings nor approves a changed contract. A changed contract uses the existing human-authorized new-run procedure. Preserve other pending holds and resume from the ledger; a later round can create a new claim at the same head, and an older decision cannot clear it.
-
-The Git-only `--intent-path <repository-relative-design-note>` option selects a committed contract fallback at the reviewed head. The project-configured intent command takes priority. Forward this option to the packaged runner; do not combine it with `--intent-file`, and preserve its selector on resume.
+- It does not run the test suite as a gate. Run the checks your workflow requires yourself; CI runs on the pull request.
+- It does not decide whether a pull request may merge.
+- It does not start a second broad review. Run one only when the user or a coordinating session asks, with a new reviewer and the same request.

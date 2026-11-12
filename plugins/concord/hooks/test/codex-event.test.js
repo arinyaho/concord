@@ -87,7 +87,6 @@ test('Codex hook manifest gives every command hook the PATH-independent node-dis
         matcher: 'startup|resume|compact',
         hooks: [
           { type: 'command', command: codexLauncherCommand('session-state-injector.js'), commandWindows: codexLauncherCommandWindows('session-state-injector.js') },
-          { type: 'command', command: codexLauncherCommand('review-injector.js'), commandWindows: codexLauncherCommandWindows('review-injector.js') },
         ],
       },
     ],
@@ -97,7 +96,6 @@ test('Codex hook manifest gives every command hook the PATH-independent node-dis
 for (const [hookEvent, hookIndex, label] of [
   ['Stop', 0, 'Stop'],
   ['SessionStart', 0, 'SessionStart state injector'],
-  ['SessionStart', 1, 'SessionStart review injector'],
 ]) {
 test(`Codex ${label} launcher uses PLUGIN_ROOT when provided`, (t) => {
   const project = tempDir('concord-codex-launcher-project-');
@@ -196,7 +194,6 @@ function runCodexLauncherScrubbed({ hookEvent, hookIndex = 0, cwd, home, env }) 
 for (const [hookEvent, hookIndex, label] of [
   ['Stop', 0, 'Stop'],
   ['SessionStart', 0, 'SessionStart state injector'],
-  ['SessionStart', 1, 'SessionStart review injector'],
 ]) {
 test(`Codex ${label} launcher discovers node off a scrubbed PATH`, (t) => {
   const project = tempDir('concord-codex-scrubbed-project-');
