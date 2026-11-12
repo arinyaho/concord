@@ -62,6 +62,7 @@ function parseArgs(argv) {
     } else usage(`unknown argument ${a}`);
   }
   if (!o.self) usage('--self is required');
+  if (lower(o.blockedLabel) === 'review-blocked') usage('--blocked-label cannot be review-blocked, which belongs to review-until-approve');
   if (o.automated.length && !o.automatedPaths.length) usage('--automated needs at least one --automated-path');
   if (!o.targets.size) usage('name at least one OWNER/REPO or OWNER/REPO#N');
   return o;
@@ -92,13 +93,14 @@ function graphql(query, vars, paged) {
   return paged ? result : [result];
 }
 const git = (dir, args, ok) => run('git', ['-C', dir, ...args], { ok });
+const httpStatus = (e) => /HTTP (\d{3})/.exec(String(e?.detail || e?.message || ''))?.[1];
 
 // ---- start-up checks ----------------------------------------------------------------------------------------------
 
 try {
   const login = lower(gh(['api', 'user'])?.login);
   if (login !== opts.self) usage(`--self ${opts.self} is not the account gh is logged in as (${login.replace(/[^a-z0-9-]/g, '?')})`);
-} catch (e) { usage(`cannot read the account gh is logged in as: ${e.message}`); }
+} catch (e) { usage(`cannot read the account gh is logged in as${httpStatus(e) ? ` (HTTP ${httpStatus(e)})` : ''}`); }
 for (const [repo, dir] of opts.checkout) {
   try { git(dir, ['merge-tree', '--write-tree', 'HEAD', 'HEAD']); } catch (_) { usage(`--checkout ${repo}: ${dir} is not a clone, or git lacks merge-tree --write-tree (git 2.38 or later)`); }
 }
@@ -137,9 +139,17 @@ function onePr(repo, number) {
 function threadsOf(pr) {
   const [owner, name] = pr.repo.split('/');
   return graphql(`query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){
-    reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{isResolved comments(first:1){nodes{databaseId}}}}}}}`, { owner, name, number: pr.number }, true)
+    reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{isResolved resolvedBy{login __typename} comments(first:1){nodes{databaseId}}}}}}}`, { owner, name, number: pr.number }, true)
     .flatMap((p) => p.data.repository.pullRequest.reviewThreads.nodes)
-    .map((t) => ({ resolved: t.isResolved, root: t.comments.nodes[0]?.databaseId }));
+    .map((t) => ({ resolved: t.isResolved, resolver: t.resolvedBy && { login: lower(t.resolvedBy.login), bot: t.resolvedBy.__typename === 'Bot' }, root: t.comments.nodes[0]?.databaseId }));
+}
+
+// When each review body was last edited; GraphQL has the edit time that REST lacks.
+function reviewEdits(pr) {
+  const [owner, name] = pr.repo.split('/');
+  return new Map(graphql(`query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){
+    reviews(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{databaseId lastEditedAt}}}}}`, { owner, name, number: pr.number }, true)
+    .flatMap((p) => p.data.repository.pullRequest.reviews.nodes).map((r) => [r.databaseId, r.lastEditedAt]));
 }
 
 const PASS = new Set(['SUCCESS', 'SKIPPED', 'NEUTRAL']);
@@ -171,14 +181,15 @@ function checksOf(pr) {
 
 // ---- notices ------------------------------------------------------------------------------------------------------
 
-const seen = (() => {
-  try { return new Set(JSON.parse(fs.readFileSync(opts.state, 'utf8')).notices); } catch (_) { return new Set(); }
-})();
+const record = (() => { try { return JSON.parse(fs.readFileSync(opts.state, 'utf8')); } catch (_) { return {}; } })();
+const seen = new Set(Array.isArray(record.notices) ? record.notices : []);
+// Merges GitHub accepted but did not yet report merged (a merge queue, or a read that failed): reported when it does.
+let awaiting = Array.isArray(record.awaiting) ? record.awaiting : [];
 function saveState() {
   if (!opts.state) return;
   const tmp = path.join(path.dirname(opts.state), `.${path.basename(opts.state)}.${crypto.randomBytes(8).toString('hex')}.tmp`);
   try {
-    fs.writeFileSync(tmp, JSON.stringify({ notices: [...seen] }), { flag: 'wx' });
+    fs.writeFileSync(tmp, JSON.stringify({ notices: [...seen], awaiting }), { flag: 'wx' });
     fs.renameSync(tmp, opts.state);
   } catch (e) {
     fs.rmSync(tmp, { force: true });
@@ -188,7 +199,11 @@ function saveState() {
 let printed = [];
 const emit = (line) => { process.stdout.write(`${line}\n`); printed.push(line); };
 const notice = (key, line) => { if (!seen.has(key)) { seen.add(key); emit(line); } };
-const warn = (what, e) => process.stderr.write(`pr-to-merge: ${what}: ${e.message}\n`);
+// Standard error carries a fixed description and the HTTP status only; the raw message goes to `<state>.log` for the user.
+function warn(what, e) {
+  if (opts.state) { try { fs.appendFileSync(`${opts.state}.log`, `${new Date().toISOString()} ${what}: ${String(e?.detail || e?.message || e)}\n`); } catch (_) { /* a log only */ } }
+  process.stderr.write(`pr-to-merge: ${what}: failed${httpStatus(e) ? ` (HTTP ${httpStatus(e)})` : ''}\n`);
+}
 
 // Text another person controls: control characters dropped, anything else unexpected replaced, at most 80 characters.
 const clean = (s) => String(s ?? '').replace(/[\x00-\x1f\x7f]/g, '').replace(/[^A-Za-z0-9 ._/:()[\]#@,+=-]/g, '?').slice(0, 80);
@@ -204,7 +219,9 @@ const hasBody = (r) => Boolean(String(r.body || '').trim());
 // ---- the approval rule ----------------------------------------------------------------------------------------------
 
 
-// Write access, read once per login per scan; an account whose access cannot be read does not approve.
+// Write access, read once per login per scan. A lookup that fails is unknown, is not cached, and holds the pull request
+// it was needed for until a later scan reads it: an unknown account must neither count nor be ignored.
+class UnknownStanding extends Error {}
 let permissions = new Map();
 function canWrite(pr, login) {
   const key = `${pr.repo.toLowerCase()}:${login}`;
@@ -212,36 +229,54 @@ function canWrite(pr, login) {
     try {
       const p = gh(['api', `repos/${pr.repo}/collaborators/${login}/permission`]);
       permissions.set(key, ['admin', 'maintain', 'write'].includes(p?.role_name) || ['admin', 'write'].includes(p?.permission));
-    } catch (e) { warn(`${tag(pr)} permission of ${clean(login)}`, e); permissions.set(key, false); }
+    } catch (e) {
+      warn(`${tag(pr)} permission of ${clean(login)}`, e);
+      throw new UnknownStanding(login);
+    }
   }
   return permissions.get(key);
 }
 // A counting account: write access, the pull request's author, or an automation (Bot) account.
 const counts = (pr, item) => isBot(item.user) || lower(item.user?.login) === pr.authorRest || canWrite(pr, lower(item.user?.login));
 
-// Approvals by an account with write access that is neither the author nor --self, whether a counting reviewer's
-// latest review requests changes (a comment-only review does not withdraw it, as on GitHub), and those latest reviews.
+// An agent's approval: one by review-until-approve, which ends its review bodies with its state marker.
+const agentApproval = (r) => String(r.body || '').includes('<!-- review-until-approve:state ');
+// Approvals by an account with write access that is neither the author nor --self nor an agent's, whether a counting
+// reviewer's latest review requests changes (a comment-only review does not withdraw it, as on GitHub), and each
+// reviewer's latest review. Only the accounts whose standing decides something are looked up.
 function approvalOf(pr, reviews) {
   const submitted = reviews.filter((r) => r.state !== 'PENDING' && r.submitted_at).sort((a, b) => time(a.submitted_at) - time(b.submitted_at));
-  const latest = new Map();
-  for (const r of submitted.filter((x) => counts(pr, x))) if (['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(r.state)) latest.set(lower(r.user?.login), r);
-  const candidate = (r) => r.state === 'APPROVED' && lower(r.user?.login) !== pr.authorRest && !self(r.user);
+  const byLogin = new Map();
+  for (const r of submitted) if (['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(r.state)) byLogin.set(lower(r.user?.login), r);
+  const latest = [...byLogin.values()];
+  const candidate = (r) => r.state === 'APPROVED' && lower(r.user?.login) !== pr.authorRest && !self(r.user) && !agentApproval(r);
   return {
     approvals: submitted.filter(candidate).filter((r) => canWrite(pr, lower(r.user?.login))),
-    changesRequested: [...latest.values()].some((r) => r.state === 'CHANGES_REQUESTED'),
-    latest: [...latest.values()],
+    changesRequested: latest.filter((r) => r.state === 'CHANGES_REQUESTED').some((r) => counts(pr, r)),
+    latest,
   };
 }
 
-// The full SHAs that --self's own conversation comments name as merges it made: `<!-- pr-to-merge:merge <sha> -->`.
-const mergeMarkers = (d) => new Set(d.issueComments.filter((c) => self(c.user)).flatMap((c) => [...String(c.body || '').matchAll(/<!-- pr-to-merge:merge ([0-9a-f]{40}) -->/g)].map((m) => m[1])));
+// The markers on the last lines of a --self conversation comment, as [kind, value]: `<!-- pr-to-merge:<kind> <value> -->`.
+function markers(c) {
+  const found = [];
+  for (const line of String(c.body || '').split('\n').map((l) => l.trim()).reverse()) {
+    const m = /^<!-- pr-to-merge:(answered|merge) (\S+) -->$/.exec(line);
+    if (m) found.push([m[1], m[2]]);
+    else if (line) break;
+  }
+  return found;
+}
+// The full SHAs that --self's own conversation comments name as merges it made.
+const mergeMarkers = (d) => new Set(d.issueComments.filter((c) => self(c.user)).flatMap(markers).filter(([k, v]) => k === 'merge' && /^[0-9a-f]{40}$/.test(v)).map(([, v]) => v));
 
 // Whether an approval given on `sha` covers the head: the head itself, or commits after it on the head's first-parent
 // line that are all merge commits, each either a clean merge of the pull request's own base (second parent on that
 // branch, tree equal to the one git produces merging the two parents) or made by --self, whatever it merged. A merge is
 // --self's when GitHub made it for --self (verified, committed by web-flow, authored by --self) or when a --self
-// conversation comment names it. Needs the local clone; without one only the head counts.
-function coverage(pr, markers) {
+// conversation comment names it. Needs the local clone; without one only the head counts. `keeps(sha)` says whether one
+// commit is such a merge (without the clone, only by --self's marker or GitHub's record).
+function coverage(pr, named) {
   const dir = opts.checkout.get(pr.repo.toLowerCase());
   const memo = new Map();
   let fetched = false;
@@ -253,7 +288,7 @@ function coverage(pr, markers) {
     const r = git(dir, ['merge-tree', '--write-tree', p1, p2], [0, 1]);
     return r.status === 0 && r.out.split('\n')[0].trim() === tree(c);
   };
-  const cleanBaseMerge = (c, p1, p2) => onBase(p2) && cleanMerge(c, p1, p2);
+  const cleanBaseMerge = (c, p1, p2) => Boolean(dir) && onBase(p2) && cleanMerge(c, p1, p2);
   const madeByGitHubForSelf = (c) => {
     const commit = gh(['api', `repos/${pr.repo}/commits/${c}`]);
     return commit?.commit?.verification?.verified === true && lower(commit?.committer?.login) === 'web-flow' && lower(commit?.author?.login) === opts.self;
@@ -267,21 +302,30 @@ function coverage(pr, markers) {
   const allowed = ([c, p1, p2, ...more]) => {
     const isMerge = Boolean(p2) && !more.length;
     // The local checks first, the API only when they fail.
-    return isMerge && (cleanBaseMerge(c, p1, p2) || markers.has(c) || madeByGitHubForSelf(c));
+    return isMerge && (cleanBaseMerge(c, p1, p2) || named.has(c) || madeByGitHubForSelf(c));
   };
-  return (sha) => {
+  const fetch = () => {
+    if (!fetched) git(dir, ['fetch', '-q', 'origin', `+refs/heads/${pr.baseRef}:refs/remotes/origin/${pr.baseRef}`, `refs/pull/${pr.number}/head`]);
+    fetched = true;
+  };
+  const covers = (sha) => {
     if (sha === pr.head) return true;
     if (!dir || !sha) return false;
     if (!memo.has(sha)) {
-      if (!fetched) {
-        git(dir, ['fetch', '-q', 'origin', `+refs/heads/${pr.baseRef}:refs/remotes/origin/${pr.baseRef}`, `refs/pull/${pr.number}/head`]);
-        fetched = true;
-      }
+      fetch();
       const after = commitsAfter(sha);
       memo.set(sha, Boolean(after) && after.every(allowed));
     }
     return memo.get(sha);
   };
+  const keeps = (sha) => {
+    if (!/^[0-9a-f]{40}$/.test(sha || '')) return false;
+    if (dir) fetch();
+    const parents = dir && exists(sha) ? git(dir, ['rev-list', '--parents', '-n', '1', sha]).out.trim().split(' ').slice(1)
+      : (gh(['api', `repos/${pr.repo}/commits/${sha}`])?.parents || []).map((p) => p.sha);
+    return allowed([sha, ...parents]);
+  };
+  return { covers, keeps };
 }
 
 // ---- review activity and open points --------------------------------------------------------------------------------
@@ -299,7 +343,7 @@ const raisedByPerson = (item, kind) => !isBot(item.user) && (kind === 'comment' 
 const who = (item) => clean(item.user?.login);
 
 // Every review, review-thread comment and conversation comment that counts and is not written by --self (or by
-// `ignore`). `point` marks the items that re-report a blocked pull request: a person's review or comment, any thread comment.
+// `ignore`). `point` marks the items that re-report a held pull request: a person's review or comment, any thread comment.
 function activity(pr, reviews, d, ignore) {
   const other = (item) => !self(item.user) && lower(item.user?.login) !== ignore && counts(pr, item); // the API last
   const threadOf = new Map(d.threads.map((t) => [t.root, t]));
@@ -322,23 +366,34 @@ function activity(pr, reviews, d, ignore) {
 // Open points: each unresolved thread opened by a counting account, bots included (keyed by its latest comment, so
 // a new reply is a new point), and each point a person raised in a review body or conversation comment after `cutoff`
 // that no later --self conversation comment marks answered with `<!-- pr-to-merge:answered <id> -->`.
+// A thread is closed only when resolved by --self or by a counting account other than the pull request's author.
+function closedThread(pr, t) {
+  if (!t.resolved || !t.resolver) return false;
+  if (t.resolver.login === opts.self) return true;
+  if (t.resolver.login === pr.author && t.resolver.bot === pr.authorBot) return false;
+  return t.resolver.bot || canWrite(pr, t.resolver.login);
+}
+
 function openPoints(pr, reviews, d, cutoff, ignore) {
   const points = [];
   const byId = new Map(d.comments.map((c) => [c.id, c]));
   for (const t of d.threads) {
     const root = byId.get(t.root);
-    if (t.resolved || (root && !counts(pr, root))) continue;
+    // A thread --self opened holds the merge like any counting account's.
+    if (closedThread(pr, t) || (root && !self(root.user) && !counts(pr, root))) continue;
     const ids = d.comments.filter((c) => rootOf(c) === t.root).map((c) => c.id);
     points.push(`thread:${t.root}:${ids.length ? Math.max(...ids) : ''}`);
   }
   const answeredAt = new Map();
   for (const c of d.issueComments.filter((x) => self(x.user))) {
-    for (const m of String(c.body || '').matchAll(/<!-- pr-to-merge:answered ((?:review|comment):\d+) -->/g)) answeredAt.set(m[1], Math.max(answeredAt.get(m[1]) || 0, timeOf(c)));
+    for (const [kind, id] of markers(c)) if (kind === 'answered') answeredAt.set(id, Math.max(answeredAt.get(id) || 0, timeOf(c)));
   }
+  const edits = reviews.some((r) => hasBody(r)) ? reviewEdits(pr) : new Map();
+  const reviewTime = (r) => Math.max(time(r.submitted_at), time(edits.get(r.id)));
   const open = (id, item, at) => !self(item.user) && lower(item.user?.login) !== ignore && at > cutoff && !((answeredAt.get(id) || 0) > at) && counts(pr, item);
   for (const r of reviews) {
     const id = `review:${r.id}`;
-    if (r.state !== 'PENDING' && hasBody(r) && raisedByPerson(r, 'review') && open(id, r, time(r.submitted_at))) points.push(id);
+    if (r.state !== 'PENDING' && hasBody(r) && raisedByPerson(r, 'review') && open(id, r, reviewTime(r))) points.push(id);
   }
   for (const c of d.issueComments) {
     const id = `comment:${c.id}`;
@@ -361,14 +416,14 @@ const isOwn = (pr, listed) => listed || (opts.mine && pr.author === opts.mine &&
 
 // The approvals that cover the head, and the time open points are counted from: the earliest covering approval (the
 // earliest approval when none covers, for the triage report only).
-function coveringApproval(pr, approvals, markers) {
-  const covered = coverage(pr, markers);
-  const covering = approvals.filter((a) => covered(a.commit_id));
+function coveringApproval(pr, approvals, named) {
+  const { covers } = coverage(pr, named);
+  const covering = approvals.filter((a) => covers(a.commit_id));
   const from = covering.length ? covering : approvals;
   return { covering, cutoff: Math.min(...from.map((a) => time(a.submitted_at))) };
 }
 
-function reportApproved(pr, { covering, open, held, items }) {
+function reportApproved(pr, { covering, open, held, items, ids }) {
   const h = short(pr.head);
   if (!covering.length) notice(`stale:${tag(pr)}@${pr.head}`, `triage ${tag(pr)} head ${h}: approved on an older head only`);
   if (pr.mergeable === 'CONFLICTING') notice(`conflict:${tag(pr)}@${pr.head}`, `triage ${tag(pr)} head ${h}: approved, conflict`);
@@ -377,7 +432,7 @@ function reportApproved(pr, { covering, open, held, items }) {
   const approvals = covering.map((a) => `approval:${a.id}`);
   const watched = held ? [...items.filter((i) => i.point).map((i) => i.id), ...approvals] : open;
   if (!watched.some((i) => !seen.has(`open:${tag(pr)}:${i}`))) return;
-  for (const i of [...open, ...approvals, ...items.map((x) => x.id)]) seen.add(`open:${tag(pr)}:${i}`);
+  for (const i of [...open, ...approvals, ...ids]) seen.add(`open:${tag(pr)}:${i}`);
   emit(`triage ${tag(pr)} head ${h}: approved, open points`);
 }
 
@@ -398,16 +453,20 @@ function mergeStatus(pr, checks, approved, needsApproval) {
   return null;
 }
 
-// A pull request with no counting approval left whose counting reviewer's latest review is a dismissed approval: the
-// repository dismissed it on a push. Read from the dismissal events, which keep the review's earlier state.
-function reportDismissed(pr, latest) {
-  const dismissed = latest.filter((r) => r.state === 'DISMISSED' && !self(r.user) && lower(r.user?.login) !== pr.authorRest).map((r) => r.id);
-  if (!dismissed.length || seen.has(`dismissed:${tag(pr)}@${pr.head}`)) return;
+// A pull request with no counting approval left whose counting reviewer's latest review is a dismissed approval, where
+// the dismissal names a commit of a kind that keeps coverage: the repository dismissed it on a push of the skill's own.
+// Read from the dismissal events, which keep the review's earlier state and the commit that caused it.
+function reportDismissed(pr, latest, d) {
+  if (seen.has(`dismissed:${tag(pr)}@${pr.head}`)) return;
+  const dismissed = new Set(latest.filter((r) => r.state === 'DISMISSED' && !self(r.user) && lower(r.user?.login) !== pr.authorRest && !agentApproval(r) && canWrite(pr, lower(r.user?.login))).map((r) => r.id));
+  if (!dismissed.size) return;
   const [owner, name] = pr.repo.split('/');
-  const approvals = new Set(graphql(`query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){
-    timelineItems(itemTypes:[REVIEW_DISMISSED_EVENT],first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{... on ReviewDismissedEvent{previousReviewState review{databaseId}}}}}}}`, { owner, name, number: pr.number }, true)
-    .flatMap((p) => p.data.repository.pullRequest.timelineItems.nodes).filter((n) => n.previousReviewState === 'APPROVED').map((n) => n.review?.databaseId));
-  if (dismissed.some((id) => approvals.has(id))) notice(`dismissed:${tag(pr)}@${pr.head}`, `triage ${tag(pr)} head ${short(pr.head)}: approval dismissed`);
+  const commits = graphql(`query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){
+    timelineItems(itemTypes:[REVIEW_DISMISSED_EVENT],first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{... on ReviewDismissedEvent{previousReviewState review{databaseId} pullRequestCommit{commit{oid}}}}}}}}`, { owner, name, number: pr.number }, true)
+    .flatMap((p) => p.data.repository.pullRequest.timelineItems.nodes)
+    .filter((n) => n.previousReviewState === 'APPROVED' && dismissed.has(n.review?.databaseId)).map((n) => n.pullRequestCommit?.commit?.oid);
+  const { keeps } = coverage(pr, mergeMarkers(d));
+  if (commits.some(keeps)) notice(`dismissed:${tag(pr)}@${pr.head}`, `triage ${tag(pr)} head ${short(pr.head)}: approval dismissed`);
 }
 
 const HOLD = 'review-blocked';
@@ -424,22 +483,25 @@ function evaluate(pr, listed) {
   // --self's approvals never count, so each new head of an automated pull request is approved again.
   const { approvals, changesRequested, latest } = approvalOf(pr, reviews);
   const approved = approvals.length > 0 && !changesRequested;
-  if (!approvals.length && pr.anyDismissed) reportDismissed(pr, latest);
+  let d = null;
+  if (!approvals.length && pr.anyDismissed) reportDismissed(pr, latest, d = details(pr));
   const automated = !approved && !changesRequested && automatedCandidate && changesOnlyAllowedPaths(pr);
   if (!approved && !automated && !own) return e;
-  const d = details(pr);
+  d = d || details(pr);
   const ignore = automated ? pr.authorRest : null;
-  const items = activity(pr, reviews, d, ignore);
 
   if (!approved && !automated) {
-    for (const item of items) notice(`review:${tag(pr)}:${item.id}`, `review ${tag(pr)} head ${short(pr.head)}: ${item.text}`);
+    for (const item of activity(pr, reviews, d, ignore)) notice(`review:${tag(pr)}:${item.id}`, `review ${tag(pr)} head ${short(pr.head)}: ${item.text}`);
     return e;
   }
 
   const held = pr.labels.includes(lower(opts.blockedLabel)) || pr.labels.includes(HOLD);
   const { covering, cutoff } = approved ? coveringApproval(pr, approvals, mergeMarkers(d)) : { covering: [true], cutoff: 0 };
+  // Every account lookup happens before any notice, so an unknown standing leaves the pull request untouched this scan.
   const open = openPoints(pr, reviews, d, cutoff, ignore);
-  if (approved) reportApproved(pr, { covering, open, held, items });
+  const items = held ? activity(pr, reviews, d, ignore) : [];
+  const ids = [...reviews.map((r) => `review:${r.id}`), ...d.comments.map((c) => `thread:${c.id}`), ...d.issueComments.map((c) => `comment:${c.id}`)];
+  if (approved) reportApproved(pr, { covering, open, held, items, ids });
   // Qualification: the approval covers the head, no open point, no hold label; then GitHub's mergeability.
   if (!covering.length || open.length || held || pr.mergeable !== 'MERGEABLE') return e;
   const checks = checksOf(pr);
@@ -475,6 +537,7 @@ function sync(pr) {
     gh(['api', '-X', 'PUT', `repos/${pr.repo}/pulls/${pr.number}/update-branch`, '-f', `expected_head_sha=${pr.head}`]);
     emit(`synced ${tag(pr)} head ${short(pr.head)}`);
   } catch (e) {
+    warn(`${tag(pr)} update-branch`, e);
     const msg = clean(e.detail || e.message);
     notice(`syncfail:${tag(pr)}@${pr.head}:${msg}`, `sync failed ${tag(pr)} head ${short(pr.head)}: ${msg}`);
   }
@@ -485,20 +548,38 @@ function approve(pr) {
   emit(`approved ${tag(pr)} (automated)`);
 }
 
+const mergedLine = (a) => `merged ${a.repo}#${a.number} into ${clean(a.base)} (${a.squash ? 'squash' : 'merge commit'}) head ${short(a.head)}${a.late.length ? `; not passed: ${a.late.join(', ')}` : ''}`;
+
 // Merges one pull request into its base, naming the head it expects. `merged` is printed only when GitHub reports the
-// pull request merged; one that stays open is in a merge queue.
+// pull request merged. One that stays open is in a merge queue; it, and one whose state could not be read, is kept in
+// the notice record and reported by a later scan when GitHub reports it merged or closed.
 function merge(e, squash) {
   const { pr } = e;
   try {
     run('gh', ['pr', 'merge', String(pr.number), '--repo', pr.repo, squash ? '--squash' : '--merge', '--match-head-commit', pr.head]);
   } catch (err) {
     if (BEHIND.test(err.detail || err.message)) return sync(pr);
+    warn(`${tag(pr)} merge`, err);
     const msg = clean(err.detail || err.message);
     return notice(`mergefail:${tag(pr)}@${pr.head}:${msg}`, `merge failed ${tag(pr)} head ${short(pr.head)}: ${msg}`);
   }
-  if (onePr(pr.repo, pr.number).pr.state !== 'MERGED') return notice(`queued:${tag(pr)}@${pr.head}`, `queued ${tag(pr)} head ${short(pr.head)}`);
-  const late = (e.notPassed || []).map((c) => `${clean(c.name)} (${c.state === 'pending' ? 'pending' : clean(c.result)})`);
-  emit(`merged ${tag(pr)} into ${clean(pr.baseRef)} (${squash ? 'squash' : 'merge commit'}) head ${short(pr.head)}${late.length ? `; not passed: ${late.join(', ')}` : ''}`);
+  const accepted = { repo: pr.repo, number: pr.number, head: pr.head, base: pr.baseRef, squash, late: (e.notPassed || []).map((c) => `${clean(c.name)} (${c.state === 'pending' ? 'pending' : clean(c.result)})`) };
+  let state;
+  try { state = onePr(pr.repo, pr.number).pr.state; } catch (err) { warn(`${tag(pr)} state after the merge`, err); }
+  if (state === 'MERGED') return emit(mergedLine(accepted));
+  awaiting.push(accepted);
+  if (state) notice(`queued:${tag(pr)}@${pr.head}`, `queued ${tag(pr)} head ${short(pr.head)}`);
+}
+
+// Reports each merge the record awaits once GitHub reports the pull request merged or closed.
+function settleAwaiting() {
+  awaiting = awaiting.filter((a) => {
+    let state;
+    try { state = onePr(a.repo, a.number).pr.state; } catch (err) { warn(`${a.repo}#${a.number} state of an accepted merge`, err); return true; }
+    if (state === 'MERGED') emit(mergedLine(a));
+    else if (state === 'CLOSED') notice(`closed:${a.repo}#${a.number}`, `closed ${a.repo}#${a.number}`);
+    return state === 'OPEN';
+  });
 }
 
 const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -526,7 +607,11 @@ function scanRepo(target) {
   const evals = [];
   for (const pr of prs.filter((p) => p.state === 'OPEN')) {
     if (pr.draft) { evals.push({ pr, status: null }); continue; }
-    try { evals.push(evaluate(pr, target.numbers.has(pr.number))); } catch (e) { warn(tag(pr), e); evals.push({ pr, status: null }); }
+    try { evals.push(evaluate(pr, target.numbers.has(pr.number))); } catch (e) {
+      if (e instanceof UnknownStanding) process.stderr.write(`pr-to-merge: ${tag(pr)}: left for the next scan, an account's access is unknown\n`);
+      else warn(tag(pr), e);
+      evals.push({ pr, status: null });
+    }
   }
 
   // A stack parent is a pull request from a branch of this repository; a fork's branch is never another pull request's base.
@@ -563,6 +648,7 @@ function scanRepo(target) {
   for (;;) {
     printed = [];
     permissions = new Map();
+    settleAwaiting();
     for (const target of opts.targets.values()) {
       try { scanRepo(target); } catch (e) { warn(target.repo, e); }
     }

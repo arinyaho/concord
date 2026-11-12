@@ -37,21 +37,37 @@ test('an approval by --self never counts, alone or on an ordinary pull request',
   assert.deepEqual(both.lines, ['triage acme/app#1 head head1: approved on an older head only'], 'only the other approval is judged');
 });
 
-test('a lost approval is reported once per head; one still standing, or one requested again, is not', () => {
-  const dismissed = review('monalisa', 'DISMISSED', 'older', 10);
-  const w = world(repo(pr(1, { reviews: [dismissed] })));
+test('a lost approval is reported once per head only when its dismissal names a merge that keeps coverage', () => {
+  const M = 'a'.repeat(40), C = 'c'.repeat(40);
+  const commits = { [M]: { author: 'octocat', committer: 'web-flow', verified: true, parents: ['1'.repeat(40), '2'.repeat(40)] }, [C]: { author: 'hubot', committer: 'hubot', parents: ['1'.repeat(40)] } };
+  const lost = (over = {}) => pr(1, { reviews: [review('monalisa', 'DISMISSED', 'older', 10, { dismissCommit: M, ...over })] });
+  const w = world({ 'acme/app': { prs: [lost()], commits } });
   const r = w.run(['acme/app']);
   assert.deepEqual(r.lines, ['triage acme/app#1 head head1: approval dismissed']);
   assert.deepEqual(r.writes, []);
   assert.deepEqual(w.run(['acme/app']).lines, []);
   w.update((x) => { x.repos['acme/app'].prs[0].headRefOid = 'head1b'; });
   assert.deepEqual(w.run(['acme/app']).lines, ['triage acme/app#1 head head1b: approval dismissed']);
-  const changes = review('monalisa', 'DISMISSED', 'older', 10, { previous: 'CHANGES_REQUESTED' });
-  assert.deepEqual(world(repo(pr(1, { reviews: [changes] }))).run(['acme/app']).lines, [], 'a dismissed request for changes');
-  const selfDismissed = review('octocat', 'DISMISSED', 'older', 10);
-  assert.deepEqual(world(repo(pr(1, { reviews: [selfDismissed] }))).run(['acme/app']).lines, [], '--self\'s dismissed approval');
-  const still = pr(1, { reviews: [review('octo-dev', 'DISMISSED', 'older', 5), approve('monalisa', 'head1', 10)] });
-  assert.deepEqual(world(repo(still)).run(['acme/app']).lines, merged(1), 'another approval still stands');
+  const marked = pr(1, { reviews: [review('monalisa', 'DISMISSED', 'older', 10, { dismissCommit: C })], issueComments: [comment('octocat', 20, { body: `Resolved the conflict.\n<!-- pr-to-merge:merge ${C} -->` })] });
+  const both = { ...commits, [C]: { ...commits[C], parents: ['1'.repeat(40), '3'.repeat(40)] } };
+  assert.deepEqual(world({ 'acme/app': { prs: [marked], commits: both } }).run(['acme/app']).lines, ['triage acme/app#1 head head1: approval dismissed'], 'a merge --self names with a marker');
+  const none = [
+    ['the author\'s commit', lost({ dismissCommit: C })],
+    ['no commit named', lost({ dismissCommit: undefined })],
+    ['a dismissed request for changes', lost({ previous: 'CHANGES_REQUESTED' })],
+    ['an agent\'s approval', lost({ body: 'ok\n<!-- review-until-approve:state {} -->' })],
+    ['--self\'s approval', pr(1, { reviews: [review('octocat', 'DISMISSED', 'older', 10, { dismissCommit: M })] })],
+  ];
+  for (const [name, p] of none) assert.deepEqual(world({ 'acme/app': { prs: [p], commits } }).run(['acme/app']).lines, [], name);
+  const still = pr(1, { reviews: [review('octo-dev', 'DISMISSED', 'older', 5, { dismissCommit: M }), approve('monalisa', 'head1', 10)] });
+  assert.deepEqual(world({ 'acme/app': { prs: [still], commits } }).run(['acme/app']).lines, merged(1), 'another approval still stands');
+});
+
+test('an approval carrying a review-until-approve state marker never counts, whoever posted it', () => {
+  const agent = approve('monalisa', 'head1', 10, { body: 'Approved.\n\n<!-- review-until-approve:state {"v":1} -->' });
+  assert.deepEqual(world(repo(pr(1, { reviews: [agent] }))).run(['acme/app']).lines, []);
+  const withPerson = pr(1, { reviews: [agent, approve('octo-dev', 'head1', 11)] });
+  assert.deepEqual(world(repo(withPerson)).run(['acme/app']).lines, merged(1));
 });
 
 test('the write access of an approver is read once per scan', () => {
