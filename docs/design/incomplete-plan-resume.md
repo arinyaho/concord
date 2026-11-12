@@ -22,4 +22,4 @@ The retry can still produce an invalid or incomplete plan; invalid schemas fail 
 
 A real-CLI regression uses two surviving findings and an empty-group plan. Before the fix, resume repeats the identical rejection without a new planner. After the fix, it launches only planning, preserves reviewer artifact hashes, reserves and charges the replacement on the same initiative run, and passes the exact finding identities to the accepted plan. Companion cases cover repeated incomplete replacement, denied reservation, and already accepted plan reuse. Pending normalized evidence and a schema-repaired rejected plan also need interruption coverage.
 
-Run the review runner, CLI, initiative budget and telemetry suites, Codex/Copilot drift checks, the plugin CI suite under Node 22, and `node scripts/dod.mjs`.
+Run the review runner, CLI, initiative budget and telemetry suites, Codex drift checks, the plugin CI suite under Node 22, and `node scripts/dod.mjs`.

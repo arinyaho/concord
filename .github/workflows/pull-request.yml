@@ -8,7 +8,6 @@ on:
       - "scripts/release-bump.mjs"
       - "VERSION"
       - "README.md"
-      - ".github/plugin/marketplace.json"
       - ".claude-plugin/marketplace.json"
       - ".agents/plugins/marketplace.json"
       - ".github/workflows/pull-request.yml"

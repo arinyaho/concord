@@ -8,7 +8,7 @@ const review = require('../../core/review');
 const { runPath } = require('../../core/initiative-review-run');
 const { tempDir } = require('./temp-dir');
 const plugins = path.resolve(__dirname, '../../..');
-const providers = { claude: path.join(plugins, 'concord/hooks/review-cli.js'), copilot: path.join(plugins, 'concord-copilot/bin/review-cli.js') };
+const providers = { claude: path.join(plugins, 'concord/hooks/review-cli.js') };
 function setup(t, provider, mode = 'base', keyed = true) {
   const root = tempDir('native-ledger-recovery-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -173,8 +173,7 @@ fs.renameSync = function(from, to, ...args) {
     assert.equal(fs.readFileSync(s.initiativeFile, 'utf8'), before);
   });
   test(`${provider}: unreadable resume report requires restored binding before mutation`, () => {
-    const engine = provider === 'claude' ? review : require('../../../concord-copilot/engine/review');
-    const report = engine.renderReviewReport([{ unreadable: 'review-feat-x.json' }]);
+    const report = review.renderReviewReport([{ unreadable: 'review-feat-x.json' }]);
     assert.match(report, /restore|reconcil/i);
     assert.match(report, /binding/i);
     assert.doesNotMatch(report, /reset <ref>/);

@@ -8,7 +8,7 @@ const { emptyLedger } = require(path.resolve(__dirname, '../../core/review'));
 const { openInitiativeRun, runPath } = require(path.resolve(__dirname, '../../core/initiative-review-run'));
 const { tempDir } = require('./temp-dir');
 const plugins = path.resolve(__dirname, '../../..');
-const providers = { claude: path.join(plugins, 'concord/hooks/review-cli.js'), copilot: path.join(plugins, 'concord-copilot/bin/review-cli.js') };
+const providers = { claude: path.join(plugins, 'concord/hooks/review-cli.js') };
 function setup(t, provider) {
   const root = fs.realpathSync(tempDir('review-feedback-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

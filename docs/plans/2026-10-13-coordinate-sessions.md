@@ -4,7 +4,7 @@
 
 **Goal:** Ship the Claude-only `coordinate-sessions` skill described in the design doc.
 
-**Architecture:** One `SKILL.md` under `plugins/concord/skills/coordinate-sessions/`, pinned by a contract test that reads the file and asserts the rules the design requires. The skill is not copied into the Codex or Copilot packages. Task 1 settles whether a cloud worker can reach the coordinator before the skill text states the cloud behavior.
+**Architecture:** One `SKILL.md` under `plugins/concord/skills/coordinate-sessions/`, pinned by a contract test that reads the file and asserts the rules the design requires. The skill is not copied into the Codex package. Task 1 settles whether a cloud worker can reach the coordinator before the skill text states the cloud behavior.
 
 **Tech Stack:** Markdown skill, Node.js `node:test`.
 
@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - The skill directory is `plugins/concord/skills/coordinate-sessions/`; its frontmatter `name` is `coordinate-sessions`.
-- `plugins/concord-codex/bin/bundle.mjs` and `plugins/concord-copilot/bin/bundle.mjs` stay unchanged, so neither package contains the skill.
+- `plugins/concord-codex/bin/bundle.mjs` stays unchanged, so the package does not contain the skill.
 - Environment is read from `get_session` (no `session_id`) `environment_kind`, never from the system prompt.
 - Report kinds are exactly `question`, `blocked`, `progress`, `done`, `handoff`; the first line is `[to coordinator] <kind>: <summary>`.
 - Merging happens only when the user allowed it when starting the coordination, with `--match-head-commit <reported head>`.
@@ -91,7 +91,7 @@ and add `coordinate-sessions` to the list near line 102 before `delegate-verbose
 
 - [ ] **Step 5: Run the tests**
 
-Run: `node --test plugins/concord/hooks/test/coordinate-sessions-skill.test.js plugins/concord/hooks/test/copilot-package.test.js plugins/concord/hooks/test/ticket-writing-skill.test.js plugins/concord/hooks/test/plugin-version.test.js`
+Run: `node --test plugins/concord/hooks/test/coordinate-sessions-skill.test.js plugins/concord/hooks/test/ticket-writing-skill.test.js plugins/concord/hooks/test/plugin-version.test.js`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**

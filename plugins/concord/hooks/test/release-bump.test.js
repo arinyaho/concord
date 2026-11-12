@@ -334,20 +334,20 @@ test('guard still fails a release-shaped pull request that is not a plain stable
   assert.equal(releasePr(remote, tmp, '7', '0.9.0', null, (dir) => fs.rmSync(path.join(dir, 'VERSION'))).status, 1, 'VERSION deleted');
 });
 
-test('guard passes a pull request that deletes the Copilot manifest and marketplace file', () => {
+test('guard passes a pull request that deletes files outside the version-file set, even when they hold a version field', () => {
   const { tmp, remote } = makeOrigin();
-  const files = ['plugins/concord-copilot/plugin.json', '.github/plugin/marketplace.json'];
+  const files = ['tools/example/plugin.json', 'tools/example/marketplace.json'];
   const base = clone(remote, path.join(tmp, 'base'));
   for (const file of files) {
     fs.mkdirSync(path.dirname(path.join(base, file)), { recursive: true });
     fs.writeFileSync(path.join(base, file), '{"version": "0.9.0-beta.9"}\n');
   }
   git(base, 'add', '-A');
-  git(base, 'commit', '-q', '-m', 'add copilot files');
+  git(base, 'commit', '-q', '-m', 'add example files');
   git(base, 'push', '-q', 'origin', 'HEAD:main');
   const dir = clone(remote, path.join(tmp, 'pr-delete'));
   git(dir, 'rm', '-q', ...files);
-  git(dir, 'commit', '-q', '-m', 'Delete Copilot');
+  git(dir, 'commit', '-q', '-m', 'Delete example files');
   git(dir, 'push', '-q', 'origin', 'HEAD:refs/pull/9/head');
   const trusted = clone(remote, path.join(tmp, 'trusted-delete'));
   git(trusted, 'fetch', '-q', '--no-tags', 'origin', 'refs/pull/9/head:refs/pr/head');

@@ -11,7 +11,6 @@ const { tempDir } = require('./temp-dir');
 const plugins = path.resolve(__dirname, '../../..');
 const providers = {
   claude: path.join(plugins, 'concord/hooks/review-cli.js'),
-  copilot: path.join(plugins, 'concord-copilot/bin/review-cli.js'),
 };
 
 // Pause only git acquisition, preserving the real CLI and ledger operations.

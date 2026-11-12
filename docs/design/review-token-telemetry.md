@@ -104,4 +104,3 @@ Provider component equations stay engine-specific: Claude sums fresh input, cach
 - A driver that skips `telemetry-slot` records only in the hook's default state directory.
 - Invocation-boundary guards cannot claim a hard provider-request ceiling.
 - A Claude Code version change makes telemetry partial until a new fixture and adapter version are added.
-- A Copilot-driven run allocates no telemetry slots; see the [GitHub Copilot support design](github-copilot-support.md).

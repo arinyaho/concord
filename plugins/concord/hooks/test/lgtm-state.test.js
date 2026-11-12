@@ -12,7 +12,6 @@ function temp() { return tempDir('lgtm-state-'); }
 const CLI = path.join(__dirname, '..', 'review-lgtm-state.js');
 const CLAUDE_SKILL = path.join(__dirname, '..', '..', 'skills', 'review-until-lgtm', 'SKILL.md');
 const CODEX_SKILL = path.join(__dirname, '..', '..', '..', 'concord-codex', 'skills', 'review-until-lgtm', 'SKILL.md');
-const COPILOT_SKILL = path.join(__dirname, '..', '..', '..', 'concord-copilot', 'skills', 'review-until-lgtm', 'SKILL.md');
 
 test('Claude and Codex ship review-until-lgtm with host-specific CLI discovery', () => {
   const claude = fs.readFileSync(CLAUDE_SKILL, 'utf8');
@@ -687,11 +686,10 @@ test('CLI claim-initial-request keeps a recorded head available for provider col
   assert.strictEqual(JSON.parse(initial).reason, 'auto-review-grace');
 });
 
-test('Claude, Codex, and Copilot review-until-lgtm skills pin the reconciliation extraction rules', () => {
+test('Claude and Codex review-until-lgtm skills pin the reconciliation extraction rules', () => {
   const claude = fs.readFileSync(CLAUDE_SKILL, 'utf8');
   const codex = fs.readFileSync(CODEX_SKILL, 'utf8');
-  const copilot = fs.readFileSync(COPILOT_SKILL, 'utf8');
-  for (const skill of [claude, codex, copilot]) {
+  for (const skill of [claude, codex]) {
     assert.match(skill, /record-review <pr> <head-sha>/);
     assert.match(skill, /reviewId.*reviewer.*reviewUrl.*commitId.*state.*lgtm/);
     assert.match(skill, /headRefOid/);
@@ -703,11 +701,10 @@ test('Claude, Codex, and Copilot review-until-lgtm skills pin the reconciliation
   }
 });
 
-test('Claude, Codex, and Copilot review-until-lgtm skills pin the no-review-object green rule', () => {
+test('Claude and Codex review-until-lgtm skills pin the no-review-object green rule', () => {
   const claude = fs.readFileSync(CLAUDE_SKILL, 'utf8');
   const codex = fs.readFileSync(CODEX_SKILL, 'utf8');
-  const copilot = fs.readFileSync(COPILOT_SKILL, 'utf8');
-  for (const skill of [claude, codex, copilot]) {
+  for (const skill of [claude, codex]) {
     assert.match(skill, /positive reaction on the PR itself/i);
     assert.match(skill, /Codex's clean no-review-object path/);
     assert.match(skill, /no Codex review object for the full `headRefOid`/);
@@ -718,11 +715,10 @@ test('Claude, Codex, and Copilot review-until-lgtm skills pin the no-review-obje
   }
 });
 
-test('Claude, Codex, and Copilot review-until-lgtm skills pin bounded batch fixes', () => {
+test('Claude and Codex review-until-lgtm skills pin bounded batch fixes', () => {
   const claude = fs.readFileSync(CLAUDE_SKILL, 'utf8');
   const codex = fs.readFileSync(CODEX_SKILL, 'utf8');
-  const copilot = fs.readFileSync(COPILOT_SKILL, 'utf8');
-  for (const skill of [claude, codex, copilot]) {
+  for (const skill of [claude, codex]) {
     assert.match(skill, /Codex, Copilot, or another explicitly configured reviewer/);
     assert.match(skill, /Do not start fixing when the first review arrives/);
     assert.match(skill, /complete collected set.*one clean-context verifier/);
@@ -1165,7 +1161,7 @@ test('self-feeding CLI works in a bare repository, which has no work tree root',
 });
 
 test('review-until-lgtm adjudicates findings and escalates a PR that does not settle twice', () => {
-  for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
+  for (const file of [CLAUDE_SKILL, CODEX_SKILL]) {
     const skill = fs.readFileSync(file, 'utf8');
     assert.match(skill, /^### Adjudicate and escalate$/m);
     const section = skill.split('### Adjudicate and escalate\n')[1].split('\n## ')[0];
@@ -1182,22 +1178,20 @@ test('review-until-lgtm adjudicates findings and escalates a PR that does not se
     assert.match(skill, /loop ends when no rollout blocker remains, the required checks are green, and collection for the head is terminal; a reviewer reaching zero findings is not part of the end condition/);
   }
   assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(CODEX_SKILL, 'utf8'));
-  assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(COPILOT_SKILL, 'utf8'));
 });
 
 test('review-until-lgtm merges only on explicit request and a ready merge-ready result', () => {
-  for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
+  for (const file of [CLAUDE_SKILL, CODEX_SKILL]) {
     const skill = fs.readFileSync(file, 'utf8');
     for (const token of ['merge-ready', 'no-automated-review', 'explicit request', '--match-head-commit']) {
       assert.ok(skill.includes(token), `${path.basename(path.dirname(file))} lacks ${token}`);
     }
   }
   assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(CODEX_SKILL, 'utf8'));
-  assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(COPILOT_SKILL, 'utf8'));
 });
 
 test('review-until-lgtm names the answered-feedback ledger verbs', () => {
-  for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
+  for (const file of [CLAUDE_SKILL, CODEX_SKILL]) {
     const skill = fs.readFileSync(file, 'utf8');
     for (const token of ['claim-reply', 'record-reply', 'find-reply', 'owedReplies', '--human', 'claim-approve-prompt', 'record JSON on stdin', '`answerUrl` from the packet\'s `authorAnswered` entry', 'with that `url` as `replyUrl`', 'numeric GitHub account id', 'press Approve on GitHub', 'A bot\'s minor is never fixed during the loop', 'A minor from a person (`author.type` `User`) is fixed in the head\'s fix round, with a failing test first when the change alters behavior, and its reply names the fix commit; it takes no `collect-minor`', 'never resolves a person\'s review thread, also when the fix makes it outdated', '`{"itemIds":[]}`', 'never run it without a piped body', 'mark-fix-pushed <pr> <head-sha> <fix-commit> <owner>', '(`{itemId, headSha, fixCommit}`)', '`{"itemIds": <status.reconciliation.unansweredItemIds>}`', 'read from a fresh `status`', '`not-selected`', '`approvePrompted`']) assert.ok(skill.includes(token), `${path.basename(path.dirname(file))} lacks ${token}`);
     assert.ok(skill.includes('Before posting one, check `git merge-base --is-ancestor <fixCommit> <live-head-sha>`; when the recorded fix commit is not in the live head\'s history'), `${path.basename(path.dirname(file))} posts an owed reply without checking its fix commit is on the live head`);
@@ -1208,7 +1202,7 @@ test('review-until-lgtm names the answered-feedback ledger verbs', () => {
 });
 
 test('review-until-lgtm pins late reviews, adjudication records, minor triage, merge evidence, and waivers', () => {
-  for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
+  for (const file of [CLAUDE_SKILL, CODEX_SKILL]) {
     const skill = fs.readFileSync(file, 'utf8');
     assert.match(skill, /review recorded later is history for that head, and its reviewer is collected again on the new head after the push/);
     assert.match(skill, /conceded finding whose fix a stop rule withholds stays out of the plan and enters the delivery disposition as `follow-up`/);
@@ -1226,11 +1220,10 @@ test('review-until-lgtm pins late reviews, adjudication records, minor triage, m
     assert.match(skill, /previous fix head missing from the head's history.*counts as absent/);
   }
   assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(CODEX_SKILL, 'utf8'));
-  assert.strictEqual(fs.readFileSync(CLAUDE_SKILL, 'utf8'), fs.readFileSync(COPILOT_SKILL, 'utf8'));
 });
 
 test('review-until-lgtm stops on either exhausted fix cap and names both caps', () => {
-  for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
+  for (const file of [CLAUDE_SKILL, CODEX_SKILL]) {
     const skill = fs.readFileSync(file, 'utf8');
     assert.match(skill, /On `fix-round-budget-exhausted` or `human-fix-round-budget-exhausted`, preserve the batch and stop for human reconciliation/);
     assert.match(skill, /Also stop when the fix rounds of a cap \(three bot rounds, five human rounds\)/);
@@ -1243,7 +1236,7 @@ test('the design and the skill name revision record ids and take review ids from
   const row = (name) => design.split('\n').find((line) => line.startsWith(`| ${name} |`)) || '';
   assert.match(row('`reviewId`'), /revision record with id `<id>~<16 hex of SHA-256 of its sorted new item ids>`/);
   assert.match(row('`pr-<n>-<head>.<file key>~<hex>.json`'), /id `<id>~<16 hex of SHA-256 of its sorted new item ids>`/);
-  for (const file of [CLAUDE_SKILL, CODEX_SKILL, COPILOT_SKILL]) {
+  for (const file of [CLAUDE_SKILL, CODEX_SKILL]) {
     const skill = fs.readFileSync(file, 'utf8');
     assert.match(skill, /reject-review-batch <pr> <head-sha>` only when[^\n]*passing the exact review ids \(`status\.reconciliation\.reviews\[\]\.id`, revision records `<id>~<hex>` included\)/);
     assert.match(skill, /`reviewIds` lists the ids of the active review batch the packet classifies \(`status\.reconciliation\.reviews\[\]\.id`, revision records included/);

@@ -50,4 +50,4 @@ The test also runs the release script against an isolated release tree to prove 
 
 ## Scope
 
-This contract unifies version metadata and its release workflow for the Claude Code and Codex distributions. Other distributions carry no version the release script writes. All harness marketplaces expose the shared plugin name `concord`, while their source directories and installation mechanisms remain independent.
+This contract unifies version metadata and its release workflow for the Claude Code and Codex distributions. Both marketplaces expose the shared plugin name `concord`, while their source directories and installation mechanisms remain independent.

@@ -1,6 +1,6 @@
 # Windows support
 
-Concord's production code paths run on native Windows (cmd.exe or PowerShell, no WSL or Git Bash required): the hook manifests of each distribution, every spawn of `codex`, `git`, `claude`, and `copilot`, and JSONL and diff line parsing. The spawn behavior is centralized in one shared helper, `core/spawn-cross-platform.js`, mirrored byte for byte into the Codex and Copilot engines, instead of each call site patching its own options.
+Concord's production code paths run on native Windows (cmd.exe or PowerShell, no WSL or Git Bash required): the hook manifests of each distribution, every spawn of `codex`, `git`, `claude`, and `copilot`, and JSONL and diff line parsing. The spawn behavior is centralized in one shared helper, `core/spawn-cross-platform.js`, mirrored byte for byte into the Codex engine, instead of each call site patching its own options.
 
 The recurring threat model is that Concord reviews an arbitrary, untrusted checkout. Nothing the reviewed repository contains (a committed `git.cmd`, a `node_modules/.bin` shim, a multi-line commit message, a branch name with shell metacharacters) may change which program runs or how its arguments are read.
 
@@ -9,7 +9,6 @@ The recurring threat model is that Concord reviews an arbitrary, untrusted check
 Each host dispatches hooks differently, so each manifest is judged by its host's own mechanism, not by pattern-matching shell syntax.
 
 - Claude Code (`plugins/concord/hooks/hooks.json`) has no per-platform key. It substitutes `${CLAUDE_PLUGIN_ROOT}` itself as a plain string before the command runs, and the resulting `node "<path>"` has no shell-specific syntax, so the same command runs whether Windows resolves the shell to Git Bash or PowerShell. No Windows-specific form is needed.
-- GitHub Copilot's manifest carries a `"windows"` key per hook.
 - Codex (`plugins/concord-codex/hooks.json`) defines a `commandWindows` field per hook as its Windows override. The POSIX `command` is an `sh -c` script with no Windows equivalent, so each hook also carries a `commandWindows` PowerShell form.
 
 The `commandWindows` strings follow three rules:
@@ -45,14 +44,13 @@ Quoting does not stop cmd.exe from reading an embedded line break as a command s
 
 ## Bundle parity
 
-Drift tests assert that both `plugins/concord-codex/engine/` and `plugins/concord-copilot/engine/` stay byte-identical to the shared core files they vendor, including `spawn-cross-platform.js`.
+Drift tests assert that `plugins/concord-codex/engine/` stays byte-identical to the shared core files it vendors, including `spawn-cross-platform.js`.
 
 ## Non-goals
 
 - Windows CI.
 - Rewriting Unix-only test fixtures: symlink and `sh`/`bash` spawn fixtures, executable-bit `chmodSync` fixtures, and the read-only-mode fixtures of the release-script test.
 - Rewriting user-authored shell commands in `review.config.json`.
-- `fs.chmodSync(stateDir, 0o700)` in the Copilot state directory adapter, which is a harmless no-op on Windows.
 
 ## Residual exposure
 

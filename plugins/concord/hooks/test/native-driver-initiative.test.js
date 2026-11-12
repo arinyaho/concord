@@ -1,7 +1,7 @@
 'use strict';
-// Native (Claude/Copilot) review CLI: keyed initiative budget, batch reservation,
+// Native review CLI (Claude and Codex): keyed initiative budget, batch reservation,
 // and enforcement at evidence acceptance. Runs the same scenarios against both
-// providers' CLI entry points.
+// packages' CLI entry points.
 const { test } = require('node:test');
 const assert = require('node:assert');
 const crypto = require('node:crypto');
@@ -18,7 +18,7 @@ const { tempDir } = require('./temp-dir');
 const PLUGINS = path.join(__dirname, '..', '..', '..');
 const PROVIDERS = {
   claude: path.join(PLUGINS, 'concord', 'hooks', 'review-cli.js'),
-  copilot: path.join(PLUGINS, 'concord-copilot', 'bin', 'review-cli.js'),
+  codex: path.join(PLUGINS, 'concord-codex', 'bin', 'review-cli.js'),
 };
 
 const tmp = (p) => tempDir(p);
