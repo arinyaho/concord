@@ -9,11 +9,11 @@ description: >-
 
 # Coordinate sessions
 
-You are the coordinating session. You decide scope and order, start workers, answer them, check what they deliver, and report to the user. You do not implement. A worker is a subagent of your own harness working in its own git worktree; it is never a separate session and never another vendor's agent. The rules this follows are in Concord's `docs/design/workflow-state-and-stops.md`.
+You are the coordinating session. You decide scope and order, start workers, answer them, check what they deliver, and report to the user. You do not implement. A worker is a subagent of your own harness working in its own git worktree; it is never a separate session and never another vendor's agent.
 
 ## 1. Set up the working documents
 
-Use the directory the project's rules file names for working documents; otherwise choose a durable directory outside every repository's tracked files (not `/tmp`). Create in it:
+Do this before you record the user's first answer. Use the directory the project's rules file names for working documents; otherwise choose a durable directory outside every repository's tracked files (not `/tmp`). Create in it:
 
 - `state.md`, the state document. Only you write it.
 - `reports/<unit>/`, one directory per unit of work.
@@ -37,19 +37,21 @@ Progress and decisions also go on the ticket; the state document is a convenienc
 
 Start one subagent per unit, in the background, in its own worktree created as the project's rules file says. Run units in parallel only when their file sets are disjoint and neither can change the other's contract; otherwise order them.
 
-- Where the `implementer` agent definition is available (Claude Code: agent type `concord:implementer`), start it. Otherwise begin the prompt with the content of `references/worker.md` next to this file. Under Codex, when no subagent can be started, run a separate Codex process (`codex exec`) in the worktree with that prompt.
+- Where the `implementer` agent definition is available (Claude Code: agent type `concord:implementer`), start it. Otherwise begin the prompt with the content of `references/worker.md` next to this file. Use the harness's own subagent whenever it has one.
+- Under Codex, only when no subagent can be started, run a separate Codex process in the worktree: `codex exec --cd <worktree> --sandbox workspace-write --skip-git-repo-check "<prompt>"`. Without `--skip-git-repo-check` the process waits forever in a directory Codex does not trust.
 - Choose the model by the kind of work: a lower-cost model for a bounded ticket with clear acceptance criteria, a more capable one for ambiguous or cross-cutting work.
 
 The prompt contains, in this order:
 
 1. The skill to run (default `ticket-to-pr`) and the ticket, with where its acceptance criteria are and what is out of scope.
-2. The repository, the worktree path, the base branch, and the branch name.
-3. File ownership: the files this unit changes, and the files other units or people own.
-4. Related repositories and their local paths, when the unit depends on them.
-5. The absolute path of `reports/<unit>/`.
-6. The path of the project's rules file. Repository rules stay there, not in the prompt.
-7. What the worker may do without asking: push its branch, open a draft pull request, mark it ready when the work is done. It never merges.
-8. For a successor: the path of the report it resumes from.
+2. The repository, the worktree path, the branch name, the branch to cut it from, and the base its pull request targets.
+3. The path of the design document the unit implements, when one exists.
+4. File ownership: the files this unit changes, and the files other units or people own.
+5. Related repositories and their local paths, with what connects each to the unit.
+6. The absolute path of `reports/<unit>/`.
+7. The path of the project's rules file. Repository rules stay there, not in the prompt.
+8. What the worker may do without asking: create its branch, commit and push to it, open a draft pull request and mark it ready when the work is done, request the reviewers the rules file names, comment on its own ticket and move its status, and file one follow-up ticket for minor points. It never merges or closes anything and touches no other pull request.
+9. For a successor: the path of the report it resumes from, and your answer when it resumes from a `question`.
 
 Record the unit in the state document.
 
@@ -77,7 +79,12 @@ Check each claim yourself, once:
 - The review record is on the ticket and in the pull request body, and no `blocker` is open. Check a finding the worker called minor against the code.
 - A bug fix has a test that failed before the fix.
 
-When a check fails, start a successor with what is missing; the pull request stays a draft. When all pass, update the state document and tick the unit on the parent ticket's checklist.
+When all pass, update the state document and tick the unit on the parent ticket's checklist.
+
+When a check fails, the pull request stays a draft:
+
+- Something concrete is missing that a worker can do (unfinished work, missing evidence, a fix CI names): start a successor with exactly that, at most once for the same gap.
+- A `blocker` is still open after the review's rechecks, or CI still fails on the head for a reason the unit could not fix: record it in the state document and on the ticket, tell the user in your report, and go on with the units that do not depend on it. Start no further successor for it.
 
 You do not merge. `pr-to-merge` carries the pull requests after they are opened, and merges only under a recorded merge authorization.
 

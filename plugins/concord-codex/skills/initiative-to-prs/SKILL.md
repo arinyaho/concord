@@ -15,7 +15,7 @@ Turn an initiative into a design in `docs/` and the smallest set of implementati
 - **Stopping.** Stop and ask only for a product decision, for something only the user holds, or before a hard-to-reverse action the user has not authorized. Give the options and a recommendation, and continue the work that does not depend on the answer. Record every other obstacle on the ticket and continue.
 - **Project rules.** The tracker, repository locations, worktree directory, pull request conventions, and reviewers come from the project's rules file.
 
-Read [references/model-routing.md](references/model-routing.md) and [references/context-discipline.md](references/context-discipline.md) before you start. The reasons for these rules are in Concord's `docs/design/workflow-state-and-stops.md`.
+Read [references/model-routing.md](references/model-routing.md) and [references/context-discipline.md](references/context-discipline.md) before you start.
 
 ## 1. Find the ground
 
@@ -40,13 +40,15 @@ Keep these classes apart in what you write:
 
 ## 3. Write the design
 
-Write the design document under `docs/`, on a branch of the repository that owns it: the behavior the initiative commits to, the decisions with what each costs, the alternatives rejected, and the residual exposure. Run the decisions `model-routing.md` names through a Deep model first. Commit it there. Review the document with `review-and-fix` (target: the document; must satisfy: the brief) and keep its result for the parent issue.
+Write the design document under `docs/`, on a design branch of the repository that owns it: the behavior the initiative commits to, the decisions with what each costs, the alternatives rejected, and the residual exposure. Run the decisions `model-routing.md` names through a Deep model first. Commit it; do not push yet.
+
+Review it with `review-and-fix` (target: the document; must satisfy: the brief; related repositories named). Ask for follow-ups to be returned, not filed: nothing is written to the tracker before the checkpoint. Keep the review's result and its minor points.
 
 If current behavior already satisfies the objective, propose closing the initiative with that evidence instead of writing tickets.
 
 ## 4. Propose the ticket set
 
-Propose the smallest set the evidence supports. Reuse a ticket that already owns an outcome. For each ticket give:
+Propose the smallest set the evidence supports. Reuse a ticket that already owns an outcome. Write the proposed tickets to a file among your working documents. For each ticket give:
 
 - the outcome, the scope, and the non-goals;
 - acceptance criteria, each one something a command or an observer can decide, and the definition of done;
@@ -57,24 +59,27 @@ One ticket is one coherent outcome. Split only at a boundary that can be deploye
 
 When one set of acceptance criteria needs several repositories, propose one ticket with a unit per repository, the versions or artifacts each unit consumes, and one owner of the combined check.
 
-Check every acceptance criterion before you present the set: rewrite any that no command or observation can decide. Do not prescribe file paths you have not traced.
+Check every acceptance criterion: rewrite any that no command or observation can decide. Do not prescribe file paths you have not traced.
+
+Then review the set with `review-and-fix` (target kind: ticket; target: the file; must satisfy: the design document; related repositories named), again with follow-ups returned. Fix what it finds in the file.
 
 ## 5. The checkpoint
 
-This is the one point where you wait for the user. Nothing has been written to the tracker.
+This is the one point where you wait for the user. Nothing has been written to the tracker or pushed.
 
-Present: the evidence verdict in a few lines, the design document's path, each open decision with its options and your recommendation, the proposed tickets with their acceptance criteria, the order and dependencies, and what you will write to the tracker. Ask for approval of the set, and ask once whether merging is authorized and for which repositories.
+Present: the evidence verdict in a few lines, the design document's path, each open decision with its options and your recommendation, the proposed tickets with their acceptance criteria, the order and dependencies, the outcome of both reviews (findings fixed, findings open, what was unverified, and the minor points held), and what you will write to the tracker. Ask for approval of the set, and ask once whether merging is authorized and for which repositories.
 
-Record the user's answers in the state document in their words, with the date.
+Create the state document now (see `coordinate-sessions`) and record the user's answers in it in their words, with the date.
 
 ## 6. Write the tickets
 
 With the approval, and without a second checkpoint:
 
-1. Write each ticket with the `ticket-writing` skill.
-2. Write or update the parent issue: a checklist with one item per unit, in order, with each unit's dependencies.
+1. Write each ticket with the `ticket-writing` skill. Each ticket carries the review record of the set.
+2. Write or update the parent issue: a checklist with one item per unit, in order, with each unit's dependencies; the user's approval of the set as a decision record; and the record of the design review.
 3. Read every ticket back and compare title, body, acceptance criteria, links, and status with what was approved. Fix a difference and read it again.
-4. Push the design branch and open a draft pull request for the design document. Put the design review's record on the parent issue and in that pull request's body, and mark it ready when no `blocker` is open.
+4. File the minor points held from both reviews as one follow-up ticket.
+5. Push the design branch and open a pull request for the design document, ready for review. It merges like any other pull request, through `pr-to-merge`.
 
 A tracker field or transition the provider refuses is recorded on the ticket and in your report; the work continues.
 
@@ -82,6 +87,7 @@ A tracker field or transition the provider refuses is recorded on the ticket and
 
 Follow the `coordinate-sessions` skill: one worker per unit, each in its own worktree, each running `ticket-to-pr`, each reporting through its report directory.
 
+- Every worker prompt names the design document's path and the branch to cut from. While the design pull request is open, a unit's branch is cut from the design branch's head; once it has merged, from the base. A unit's pull request targets the base. When the design pull request merges, the unit merges the base in; when the design changes in its review, the unit merges the design branch in.
 - Start the units whose dependencies are met. Run in parallel only units with disjoint files whose contracts cannot change each other.
 - A unit that depends on an unmerged prerequisite in the same repository is stacked: it branches from the prerequisite's head, its pull request targets the prerequisite's branch, and its review is against the prerequisite's head commit.
 - A failure in one unit leaves the others' evidence standing. A failed upstream contract holds every unit that depends on it.

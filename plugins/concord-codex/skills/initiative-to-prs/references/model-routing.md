@@ -26,4 +26,4 @@ Use a Deep model for implementation when the work spans security, authorization,
 
 ## Depth
 
-At most two levels below you: a worker, and a child of that worker for a bounded extraction or trace. Only the worker edits its branch.
+At most two levels below you: a worker, and a child of that worker. A worker's children are the reviewers `review-and-fix` starts, the Deep model that examines a design decision, and a bounded extraction or trace. No child starts children of its own. Only the worker edits its branch.

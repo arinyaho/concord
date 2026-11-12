@@ -36,11 +36,13 @@ A worker cannot wait for an answer. A `question` or `blocked` report ends the wo
 
 ## The worker prompt
 
-The prompt names the skill to run and the ticket, the repository, worktree, base and branch, the files the unit owns and the files others own, the related repositories, the report directory, the project's rules file, and what the worker may do without asking: push its branch, open a draft pull request, and mark it ready when the work is done. Project rules stay in the rules file.
+The prompt names the skill to run and the ticket, the repository, the worktree, the branch, the branch to cut it from and the base its pull request targets, the design document the unit implements, the files the unit owns and the files others own, the related repositories, the report directory, the project's rules file, and what the worker may do without asking: create its branch, commit and push to it, open a draft pull request and mark it ready when the work is done, request the reviewers the rules file names, comment on its own ticket and move its status, and file one follow-up ticket for minor points. Project rules stay in the rules file.
+
+A unit of an initiative is cut from the design branch's head while the design's pull request is open, so that the worker can read the design, and from the base once that pull request has merged.
 
 ## Checking a delivery
 
-The coordinating session checks a `done` report instead of accepting it: the pull request's head on the remote is the reported commit, CI passed on that head (read by head SHA, not by branch), each acceptance criterion has the evidence the report names, the review record is on the ticket and in the pull request body with no blocker open, and a bug fix has a test that failed before it. A failed check goes to a successor and the pull request stays a draft. A passed check is recorded in the state document and on the parent ticket's checklist.
+The coordinating session checks a `done` report instead of accepting it: the pull request's head on the remote is the reported commit, CI passed on that head (read by head SHA, not by branch), each acceptance criterion has the evidence the report names, the review record is on the ticket and in the pull request body with no blocker open, and a bug fix has a test that failed before it. A passed check is recorded in the state document and on the parent ticket's checklist. After a failed check the pull request stays a draft. A successor is started only when something concrete is missing that a worker can do, and at most once for the same gap. A blocker still open after the review's rechecks, or CI that fails for a reason the unit could not fix, is recorded in the state document, reported to the user, and left; the independent units continue.
 
 The coordinating session does not merge. `pr-to-merge` carries the pull requests, and merges only under a merge authorization the state document records.
 
@@ -75,5 +77,6 @@ When its context grows large, the coordinating session brings the state document
 
 - A worker shares the coordinating session's filesystem, so that it never writes the state document is an instruction, not a restriction.
 - The check of a `done` report covers what the report names. An acceptance criterion with weak evidence that the report presents as met passes unless the coordinating session reads the evidence closely; the human reviewer of the pull request is the next check.
+- A unit whose delivery check fails for a reason no successor can fix stays an open draft until the user acts on the report.
 - A state document that is lost takes the standing authorizations with it, and the next session asks the user again.
 - Under Codex, a worker run as a separate process is not started from an agent definition, so its model and tools are whatever that process is started with.
