@@ -24,7 +24,7 @@ These kinds of local file are allowed. None records the state of the work, and e
 - **Configuration the user writes.** For example the options of a scheduled run. It decides what the user wrote it to decide, which can include an authorization such as merging. No workflow writes it.
 - **Logs.** Output kept for a person to read, such as the GitHub messages a polling script does not print. The session does not read them, and they decide nothing.
 
-Minor points that a workflow does not fix are collected into one follow-up ticket in the project's tracker.
+Minor points that a workflow does not fix are collected into one follow-up ticket in the project's tracker. `pr-to-merge` files none: a minor point it does not fix on the user's own pull request is listed in its reply and in its report to the user.
 
 ## When a workflow stops
 
