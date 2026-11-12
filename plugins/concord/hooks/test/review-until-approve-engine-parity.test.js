@@ -431,3 +431,50 @@ test('a reviewer that changes the checkout or a sealed input fails the round the
     assert.equal(run.result, undefined);
   }
 });
+
+test('a role gets one correction: a repaired correctness artifact is not re-run for coverage, and a coverage re-run is not repaired', async () => {
+  const partial = ['src/a.js', 'src/moved.js'];
+  const candidate = finding('correctness:real', 'src/a.js', 'const two = 3;');
+  // Repairable and incomplete at once: the repair is the one correction, so the missing paths fail the round.
+  const repairedThenIncomplete = assertSame(await both({ ...clean, correctness: [{ status: 'OK', examined: partial, findings: [] }, clean.correctness] }));
+  assert.match(repairedThenIncomplete.error, /correctness coverage is incomplete/);
+  assert.deepEqual(repairedThenIncomplete.calls.map((c) => c.role), ['correctness']);
+  // Incomplete first, then a re-run that needs a repair: the re-run was the one correction.
+  for (const second of [{ status: 'OK', examined: CHANGED, findings: [] }, { status: 'ok', examined: CHANGED, findings: [finding('correctness:Bad_Slug', 'src/a.js', 'const two = 3;')] }]) {
+    const rerunThenRepair = assertSame(await both({ ...clean, correctness: [{ status: 'ok', examined: partial, findings: [] }, second] }));
+    assert.ok(rerunThenRepair.error);
+    assert.deepEqual(rerunThenRepair.calls.map((c) => c.role), ['correctness', 'correctness']);
+  }
+  // The correction is counted per role: after a coverage re-run of correctness, verify may still take its repair.
+  const otherRole = assertSame(await both({ correctness: [{ status: 'ok', examined: partial, findings: [candidate] }, { status: 'ok', examined: CHANGED, findings: [candidate] }], verify: { status: 'Findings', rejected: [], findings: [] } }));
+  assert.equal(otherRole.error, undefined);
+  assert.deepEqual(otherRole.calls.map((c) => c.role), ['correctness', 'correctness', 'verify']);
+  assert.equal(otherRole.result.findings.length, 1);
+  // Both correctness and verify may take a repair in one round, and one repair covers several slips of one artifact.
+  const several = assertSame(await both({
+    correctness: { status: 'OK', examined: CHANGED, findings: [finding('correctness:Bad_Slug', 'src/a.js', 'const two = 3;'), finding('correctness:other', 'src/a.js', 'const one = 1;')] },
+    gate: { status: 'ok', findings: [finding('gate:silent-gap:real', 'src/same.js', 'exports.same')] },
+    verify: { status: 'CLEAN', rejected: [{ id: 'correctness:other', reason: 'read it' }, { id: 'gate:silent-gap:real', reason: 'not mine' }], findings: [{ id: 'correctness:bad-slug' }] },
+    'gate-verify': clean['gate-verify'],
+  }, { broad: true, noBroad: false }));
+  assert.equal(several.error, undefined, several.error);
+  assert.deepEqual(several.result.findings.map((f) => f.id), ['correctness:bad-slug', 'gate:silent-gap:real']);
+});
+
+test('a launch that fails is reported with the same sanitized message, never the raw error', async () => {
+  const rejected = await both(clean, {}, { before: (input) => { if (input.role === 'correctness') throw new Error('raw text from the provider: sk-secret'); } });
+  assertSame(rejected);
+  assert.equal(rejected.own.error, rejected.engine.error);
+  assert.match(rejected.own.error, /^harness-failure: correctness provider execution failed; /);
+  assert.doesNotMatch(rejected.own.error, /sk-secret/);
+  // A reviewer process that exits non-zero, times out or is interrupted is classified the same way.
+  for (const result of [{ status: 3 }, { status: null, timedOut: true }, { status: null, signal: 'SIGKILL' }, { status: 0, interrupted: 'SIGTERM' }]) {
+    const runs = {};
+    for (const [name, run] of [['engine', (o) => engine.runReviewUntilGreen({ ...o, reviewOnly: true, repairFindingAnchors: true, cliPath: CLI })], ['own', (o) => own.runReview(o)]]) {
+      const { repo, base } = checkout();
+      runs[name] = await outcome(() => run({ ref: 'concord-pr-5', base, reviewer: 'claude', broad: false, noBroad: true, repoRoot: repo, spawn: async () => result }));
+    }
+    assert.ok(runs.own.error, JSON.stringify(result));
+    assert.equal(runs.own.error, runs.engine.error);
+  }
+});

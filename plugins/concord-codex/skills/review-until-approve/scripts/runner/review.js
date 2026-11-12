@@ -14,6 +14,7 @@ const { readCommittedSource, prepareAnchors, applyAnchors } = require('./review-
 const { reviewerPrompt } = require('./round-plan');
 const { gitReviewSnapshot, gitHeadSha, gitDirty, trackedCheckoutInventory, changedTrackedPath } = require('./target');
 const { canonicalPath, providerExec, invoke, reviewCodexConfig } = require('./launch');
+const { providerFailure } = require('./provider-failure');
 const { readReviewSource, unexaminedPaths, roundCandidates, foldGateFindings, gateFollowUpEligible, targetSlug, readIntentFile } = require('./fold');
 
 const ROUND = 1;
@@ -93,11 +94,12 @@ function foldRound({ repoRoot, artifacts, changed, intentApplied, gateApplied })
   return { findings, addressed: vJson.addressed || [] };
 }
 
-// What a reviewer wrote, as the contract's canonical artifact. A status spelling, a disposition of another role's id, a
-// kept candidate listed without its evidence and a mis-spelled slug are repaired once without a model; anything else fails.
-function normalizeRole(role, raw) {
-  try { return artifactContract.normalizeArtifact(role, raw, { addressed: true }); } catch (e) {
-    if (!(e instanceof artifactContract.ArtifactError) || e.kind !== 'retry') throw harness(e.message);
+// What a reviewer wrote, as the contract's canonical artifact, and whether it took the repair. A status spelling, a disposition
+// of another role's id, a kept candidate listed without its evidence and a mis-spelled slug are repaired without a model, once
+// per role and only while `repair` is allowed; anything else fails.
+function normalizeRole(role, raw, { repair = true } = {}) {
+  try { return { canonical: artifactContract.normalizeArtifact(role, raw, { addressed: true }), repaired: false }; } catch (e) {
+    if (!repair || !(e instanceof artifactContract.ArtifactError) || e.kind !== 'retry') throw harness(e.message);
     let parsed; try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
     const statusSpelling = parsed && typeof parsed.status === 'string' && ['ok', 'findings', 'clean'].includes(parsed.status.toLowerCase()) && parsed.status !== parsed.status.toLowerCase();
     const prefixes = artifactContract.allowedFindingPrefixes(role);
@@ -113,7 +115,7 @@ function normalizeRole(role, raw) {
     try {
       candidate = artifactContract.repairCandidate(role, raw);
       if (!artifactContract.preservesArtifact(role, raw, candidate)) throw new Error(`${role} repair candidate does not preserve the original evidence`);
-      return artifactContract.normalizeArtifact(role, `${JSON.stringify(candidate)}\n`, { addressed: true });
+      return { canonical: artifactContract.normalizeArtifact(role, `${JSON.stringify(candidate)}\n`, { addressed: true }), repaired: true };
     } catch (again) { throw harness(again.message); }
   }
 }
@@ -187,25 +189,30 @@ async function runRound(options, stateDir, codexHome) {
       const ownOutput = roleArtifacts.get(input.role);
       checkReviewCheckout();
       checkProtected(ownOutput);
-      await invoke(spawn, {
+      const launched = {
         ...input, repoRoot, stateDir, provider: reviewer, untrustedCheckout: true,
         ...(options.reviewerModel ? { requestedModel: options.reviewerModel } : {}),
         ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
         ...(options.subprocessTimeoutMs ? { timeoutMs: options.subprocessTimeoutMs } : {}),
         ...(abortController ? { abortSignal: abortController.signal } : {}),
         ...(codexHome && reviewer === 'codex' ? { env: { ...process.env, CODEX_HOME: codexHome } } : {}),
-      });
+      };
+      // A launch that could not start is reported by its class, never by the raw error text.
+      try { await invoke(spawn, launched); } catch (error) {
+        if (error.reviewFailure) throw error;
+        throw harness(providerFailure(launched, error).message);
+      }
       checkReviewCheckout(true);
       checkProtected(ownOutput);
       fileHash(ownOutput);
     };
 
     const artifacts = {};
-    const accept = (role) => {
+    const accept = (role, allow) => {
       const file = roleArtifacts.get(role);
       let raw;
       try { raw = readArtifactBytes(file, stateRoot).toString('utf8'); } catch (_) { throw harness(`missing or unsafe gate artifact ${role} for round ${ROUND}`); }
-      return normalizeRole(role, raw);
+      return normalizeRole(role, raw, allow);
     };
     const seal = (role, canonical) => {
       const file = roleArtifacts.get(role);
@@ -218,14 +225,16 @@ async function runRound(options, stateDir, codexHome) {
       throwIfAborted();
       const prompt = reviewerPrompt(role, role === 'verify' ? { ...context, examined: (artifacts.correctness.examined || []).filter((item) => typeof item === 'string') } : context);
       await launch({ role, prompt });
-      let canonical = accept(role);
+      let { canonical, repaired } = accept(role);
       if (role === 'correctness') {
         // Every changed path must be listed as examined. Only the reviewer can say it read a file, so one re-run names the paths it left out.
+        // A role gets one correction: an artifact that took the repair is not re-run, and the re-run's artifact is not repaired.
         const missingAfter = (artifact) => unexaminedPaths(repoRoot, { target: { head_sha: head } }, snapshot.paths, artifact.examined, snapshot.leftSha);
         let missing = missingAfter(canonical);
+        if (missing.length && repaired) throw harness(`correctness coverage is incomplete; missing changed file(s): ${missing.join(', ')}; the artifact was already repaired once`);
         if (missing.length) {
           await launch({ role, prompt: `${prompt}\nThe previous correctness artifact omitted changed path(s): ${missing.join(', ')}. Examine them and list every changed path in "examined", including the old path of every renamed file and every deleted file.` });
-          canonical = accept(role);
+          ({ canonical } = accept(role, { repair: false }));
           missing = missingAfter(canonical);
           if (missing.length) throw harness(`correctness coverage is incomplete; missing changed file(s): ${missing.join(', ')}; correctness coverage retry exhausted for this round`);
         }
