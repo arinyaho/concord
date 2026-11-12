@@ -243,3 +243,16 @@ test('file-target reviewers are told the artifact framing, and a blocked method 
     /re-run the reviewer with a corrected method and leave the target, ledger, and prior review evidence unchanged/,
   );
 });
+
+test('the lite gate prompt asks for design-conformance gaps only', () => {
+  const prompt = reviewerPrompt('gate', { stateDir: '<stateDir>', round: '<n>', slug: '<slug>', gateMode: 'design-conformance', targetType: 'git', dodPassed: true });
+  assert.match(prompt, /design-conformance gaps only/);
+});
+
+test('the sandbox uid note is shared within the finder pair and within the verifier pair', () => {
+  const { ENV_CLAUSE_BY_ROLE } = require(path.join(CORE, 'round-plan'));
+  assert.equal(ENV_CLAUSE_BY_ROLE.gate, ENV_CLAUSE_BY_ROLE.correctness);
+  assert.equal(ENV_CLAUSE_BY_ROLE['gate-verify'], ENV_CLAUSE_BY_ROLE.verify);
+  assert.notEqual(ENV_CLAUSE_BY_ROLE.verify, ENV_CLAUSE_BY_ROLE.correctness);
+});
+
