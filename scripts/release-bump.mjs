@@ -65,11 +65,18 @@ function matchesReleaseScript(baseRef, headRef, version) {
   }
 }
 
+// The version string of a manifest at a ref, read as data; throws when the file is missing, is not JSON, or has no string version.
+function manifestVersion(ref, file) {
+  const { version } = JSON.parse(git('show', `${ref}:${file}`));
+  if (typeof version !== 'string') throw new Error(`${file} has no string version`);
+  return version;
+}
+
 function guard(baseRef, headRef) {
   const changed = git('diff', '--name-only', `${baseRef}...${headRef}`).split('\n').filter(Boolean);
   const touched = touchedVersionFiles(changed);
   if (touched.length === 0) return 0;
-  // The one pull request allowed to edit version files is a release: only version files change, and VERSION becomes a higher stable version.
+  // The one pull request allowed to change a version is a release: only version files change, and VERSION becomes a higher stable version.
   // The head is read as data with git show; its scripts never run.
   if (touched.length === changed.length && touched.includes('VERSION')) {
     try {
@@ -80,7 +87,19 @@ function guard(baseRef, headRef) {
       // A missing VERSION or an unrunnable release script is not a release; fall through to the failure.
     }
   }
-  console.error(`Pull requests do not edit version files except a release that sets a higher stable VERSION; main's release-bump workflow raises the version after merge:\n${touched.join('\n')}`);
+  // Otherwise VERSION stays put, and a manifest may change only while its version field stays identical.
+  // The comparison is with the commit the pull request branched from, as the diff above is: a bump that landed on the base since then is not the pull request's change.
+  const forkPoint = git('merge-base', baseRef, headRef);
+  const offending = touched.filter((file) => {
+    if (file === 'VERSION') return true;
+    try {
+      return manifestVersion(forkPoint, file) !== manifestVersion(headRef, file);
+    } catch {
+      return true; // deleted, added, not JSON, or no string version
+    }
+  });
+  if (offending.length === 0) return 0;
+  console.error(`Pull requests do not change the version except a release that sets a higher stable VERSION; main's release-bump workflow raises the version after merge:\n${offending.join('\n')}`);
   return 1;
 }
 
