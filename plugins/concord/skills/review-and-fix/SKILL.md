@@ -25,7 +25,7 @@ Invoking this skill authorizes: fixes in the target, commits on your own branch,
 | A ticket URL or key | Ticket |
 | A branch, a pull request of your own, or nothing (the current branch) | Change |
 
-For a change, fix two commits now: the head, and the base it is reviewed against. The base is the pull request's base branch; with no pull request yet, the base the branch was cut from (the one named in your prompt or chosen at `ticket-to-pr` stage 0), not the default branch by assumption. A stacked unit is reviewed against its prerequisite's head. Fetch, and use the commit hashes from here on.
+For a change, fix two commits now: the head, and the base it is reviewed against. The base is the commit the branch was cut from (named in your prompt, or recorded at `ticket-to-pr` stage 0), or, after that branch was merged in again, the merge base with it. This holds for a stacked unit and for a unit cut from a design branch too, so the diff holds only the change's own commits. Only when nothing says where the branch was cut from, use the merge base with the pull request's base branch. Fetch, and use the commit hashes from here on.
 
 ## 2. Write the review request
 

@@ -23,7 +23,7 @@ The unit is one coherent ticket outcome; keep its changes together. Split it onl
 
 | # | Stage | Exit condition |
 |---|---|---|
-| 0 | Branch | A dedicated branch (in a worktree when the rules file says so) is cut from the branch your prompt names, otherwise from the base the pull request will target. Record both |
+| 0 | Branch | A dedicated branch (in a worktree when the rules file says so) is cut from the branch your prompt names, otherwise from the base the pull request will target. Record two things on the ticket: the branch and commit it was cut from, and the base the pull request targets |
 | 1 | Ticket | Every acceptance criterion names something an observer or a command can decide. The ticket has a review record. The ticket is in progress in the tracker |
 | 2 | Discriminating red | The harm the ticket names reproduces against the unchanged code, and the command and result are on the ticket |
 | 3 | Design document | Committed under `docs/`: the decision, what it costs, the residual exposure, and for a stateful change the table below. When a design document for the outcome exists, only what this unit decides is added to it |
@@ -66,7 +66,7 @@ Run the `review-and-fix` skill. Its review request names:
 
 | | Stage 4 | Stage 7 |
 |---|---|---|
-| Target | The design document's path; when the unit added to an existing one, the diff of that file against the branch it was cut from | The diff between the fixed base commit and the head commit. The base is the one recorded at stage 0, or the prerequisite's head for a stacked unit |
+| Target | The design document's path; when the unit added to an existing one, the diff of that file against the branch it was cut from | The diff from the commit the branch was cut from (stage 0) to the head commit; after that branch or the base was merged into the unit, from the merge base with the branch it was cut from. The diff then holds this unit's changes and not the design document or a prerequisite's commits |
 | Must satisfy | The ticket and its acceptance criteria, and the parent ticket or brief when there is one | The ticket's acceptance criteria and plan, and the design document's path |
 | Related repositories | The local path of each repository this unit depends on or that depends on it, with what connects it (a submodule pin, a package version, a shared format, an API); "unavailable" for one with no local checkout | The same list |
 | Evidence | The code and the red run the design rests on | The test commands, the commit they ran on, and the results |

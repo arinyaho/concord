@@ -183,7 +183,8 @@ test('initiative-to-prs reviews the design and the ticket set before its one che
   const write = section(text, '## 6. Write the tickets');
   assert.match(write, /the user's approval of the set as a decision record/);
   assert.match(write, /File the minor points held from both reviews as one follow-up ticket/);
-  assert.match(write, /open a pull request for the design document, ready for review/);
+  assert.match(write, /open a pull request for the design document: ready for review when its review left no `blocker` open, otherwise a draft with the open finding listed in its body/);
+  assert.match(write, /The units start either way/);
   assert.match(section(text, '## 7. Run the units'), /cut from the design branch's head; once it has merged, from the base\. A unit's pull request targets the base/);
 });
 
@@ -199,8 +200,9 @@ test('a unit reads an existing design instead of writing another, and its review
   assert.match(ttp, /Review any other ticket before work starts: run `review-and-fix` with the ticket as the target/);
   assert.match(ttp, /When it fails for a reason the change caused, fix it, push, and wait again/);
   const raf = skill('review-and-fix');
-  assert.match(raf, /with no pull request yet, the base the branch was cut from/);
-  assert.match(raf, /A stacked unit is reviewed against its prerequisite's head/);
+  assert.match(raf, /The base is the commit the branch was cut from .*or, after that branch was merged in again, the merge base with it/);
+  assert.match(ttp, /Record two things on the ticket: the branch and commit it was cut from, and the base the pull request targets/);
+  assert.match(review, /The diff from the commit the branch was cut from \(stage 0\) to the head commit; after that branch or the base was merged into the unit, from the merge base with the branch it was cut from/);
   assert.match(raf, /when no command prints a ticket, save the ticket's text/);
   const worker = section(skill('coordinate-sessions'), '## 3. Start a worker');
   assert.match(worker, /the branch to cut it from, and the base its pull request targets/);

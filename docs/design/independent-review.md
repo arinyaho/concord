@@ -15,7 +15,7 @@ The reviewer receives the review request and nothing else. It does not receive t
 
 A review target is a list of things to read. The caller gives paths and commands; it does not copy the target into another file for the reviewer. The one exception is a ticket in a tracker that no command can print: the caller saves the ticket's text to a file among its working documents and gives that path.
 
-For a change, the base is the pull request's base branch, and before a pull request exists the base the branch was cut from. A stacked change is reviewed against its prerequisite's head.
+For a change, the base is the commit the branch was cut from, or its merge base with that branch after later merges, so that the diff holds only the change's own commits: a stacked change does not carry its prerequisite's commits, and a change cut from a design branch does not carry the design document.
 
 | Item | Design document | Ticket | Change |
 |---|---|---|---|

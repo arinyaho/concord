@@ -79,7 +79,7 @@ With the approval, and without a second checkpoint:
 2. Write or update the parent issue: a checklist with one item per unit, in order, with each unit's dependencies; the user's approval of the set as a decision record; and the record of the design review.
 3. Read every ticket back and compare title, body, acceptance criteria, links, and status with what was approved. Fix a difference and read it again.
 4. File the minor points held from both reviews as one follow-up ticket.
-5. Push the design branch and open a pull request for the design document, ready for review. It merges like any other pull request, through `pr-to-merge`.
+5. Push the design branch and open a pull request for the design document: ready for review when its review left no `blocker` open, otherwise a draft with the open finding listed in its body. It merges like any other pull request, through `pr-to-merge`. The units start either way.
 
 A tracker field or transition the provider refuses is recorded on the ticket and in your report; the work continues.
 
