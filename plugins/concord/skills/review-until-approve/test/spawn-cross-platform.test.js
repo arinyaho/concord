@@ -2,12 +2,12 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
-const { tempDir } = require('./temp-dir');
+const { tempDir } = require('../../../hooks/test/temp-dir');
 
 // Load the module fresh under a forced process.platform so both branches are
 // exercised regardless of which OS actually runs this test.
 function loadWithPlatform(platform) {
-  const modPath = path.join(__dirname, '..', '..', 'core', 'spawn-cross-platform.js');
+  const modPath = path.join(__dirname, '..', 'scripts', 'runner', 'spawn-cross-platform.js');
   delete require.cache[require.resolve(modPath)];
   const original = Object.getOwnPropertyDescriptor(process, 'platform');
   Object.defineProperty(process, 'platform', { value: platform, configurable: true });

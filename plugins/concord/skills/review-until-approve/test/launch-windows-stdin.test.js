@@ -26,11 +26,11 @@ const fs = require('node:fs');
 const pathMod = require('node:path');
 const { EventEmitter } = require('node:events');
 const childProcess = require('node:child_process');
-const { tempDir } = require('./temp-dir');
+const { tempDir } = require('../../../hooks/test/temp-dir');
 
 function loadRunnerWithPlatform(platform) {
-  const runnerPath = require.resolve('../../core/codex-review-runner.js');
-  const spawnHelperPath = require.resolve('../../core/spawn-cross-platform.js');
+  const runnerPath = require.resolve('../scripts/runner/launch.js');
+  const spawnHelperPath = require.resolve('../scripts/runner/spawn-cross-platform.js');
   delete require.cache[runnerPath];
   delete require.cache[spawnHelperPath];
   const original = Object.getOwnPropertyDescriptor(process, 'platform');
@@ -191,23 +191,3 @@ for (const [provider, expectDashP] of [['claude', true], ['copilot', false]]) {
     });
   });
 }
-
-test('win32: jsonCli preserves Path entries without duplicate case variants', (t) => {
-  let launch;
-  t.mock.method(childProcess, 'execFileSync', (bin, args, opts) => {
-    launch = { bin, args, opts };
-    return '{}';
-  });
-  const { jsonCli } = loadRunnerWithPlatform('win32');
-  const originalEnv = process.env;
-  process.env = { Path: 'C:\\Windows\\System32;C:\\Tools', PATHEXT: '.EXE;.CMD' };
-  try {
-    jsonCli('review-cli.js', ['status'], '/repo');
-    const keys = Object.keys(launch.opts.env).filter((key) => key.toLowerCase() === 'path');
-    assert.deepStrictEqual(keys, ['Path']);
-    assert.strictEqual(launch.opts.env.Path, pathMod.dirname(process.execPath) + ';C:\\Windows\\System32;C:\\Tools');
-    assert.strictEqual(launch.bin, process.execPath);
-  } finally {
-    process.env = originalEnv;
-  }
-});

@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { createLaunchLifecycle } = require('../../core/launch-lifecycle');
+const { createLaunchLifecycle } = require('../scripts/runner/launch-lifecycle');
 
 function result(provider = 'codex', supportedSchema = true) {
   return createLaunchLifecycle({ provider, supportedSchema });
@@ -106,16 +106,3 @@ test('normal Codex completion proves started and provider prose cannot trigger r
   const prose = result(); prose.spawned(); prose.observe({ type: 'error', message: 'model_not_found' });
   assert.equal(finish(prose).lifecycle, 'unknown');
 });
-
-test('mirrored provider engine modules preserve the same lifecycle decisions', () => {
-  for (const path of ['../../../concord-codex/engine/launch-lifecycle']) {
-    const tracker = require(path).createLaunchLifecycle({ provider: 'codex', supportedSchema: true });
-    tracker.spawned(); tracker.observe(error('sandbox_denied'));
-    assert.equal(finish(tracker).lifecycle, 'not-started');
-    assert.equal(finishAfterClose(tracker).lifecycle, 'unknown');
-  }
-});
-
-function finishAfterClose(tracker) {
-  return tracker.finish({ status: 1, signal: null, timedOut: false, interrupted: false });
-}

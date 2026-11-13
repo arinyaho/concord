@@ -3,8 +3,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { publishDirectoryAtomic } = require('../../core/atomic-write');
-const { tempDir } = require('./temp-dir');
+const { publishDirectoryAtomic } = require('../scripts/runner/atomic-write');
+const { tempDir } = require('../../../hooks/test/temp-dir');
 function fixture() {
   const parent = tempDir('atomic-archive-');
   const staging = path.join(parent, 'archive.pending'), destination = path.join(parent, 'archive');

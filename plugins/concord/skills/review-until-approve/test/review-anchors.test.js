@@ -4,8 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { tempDir } = require('./temp-dir');
-const { prepareAnchors, applyAnchors, readCommittedSource } = require('../../core/review-anchors');
+const { tempDir } = require('../../../hooks/test/temp-dir');
+const { prepareAnchors, applyAnchors, readCommittedSource } = require('../scripts/runner/review-anchors');
 
 const finding = { id: 'gate:cross-context:mode', category: 'cross-context', file: 'main.go', line: null, span: 'if hesmAddr != "" { ... } else if devSecret != "" {', summary: 'The dev secret is silently ignored.', requirement: 'Pick one mode.' };
 const source = 'package main\nif hesmAddr != "" {\n  serveHESM()\n} else if devSecret != "" {\n  serveDev()\n}\n';

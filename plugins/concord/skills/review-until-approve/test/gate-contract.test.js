@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const gc = require('../../core/gate-contract');
+const gc = require('../scripts/runner/gate-contract');
 
 test('FINDING_ID_RE: accepts a stable gate:slug, rejects unsafe filename chars', () => {
   assert.ok(gc.isValidFindingId('correctness:off-by-one'));

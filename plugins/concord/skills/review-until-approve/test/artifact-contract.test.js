@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { normalizeArtifact, ArtifactError, retryPrompt, allowedFindingPrefixes, preservesArtifact, repairCandidate } = require('../../core/artifact-contract');
+const { normalizeArtifact, ArtifactError, retryPrompt, allowedFindingPrefixes, preservesArtifact, repairCandidate } = require('../scripts/runner/artifact-contract');
 
 test('repair preservation accepts plan findingIds, clean verdicts, and reordered object keys', () => {
   const plan = { status: 'OK', protocolVersion: 2, groups: [{ groupId: 'g', findingIds: ['correctness:x'], rootCause: 'one', invariants: [], changeClass: 'local', structuralEffects: [], action: 'fix' }] };
@@ -286,7 +286,7 @@ test('repairCandidate deletes only entries proven foreign or explicitly invalid 
 });
 
 test('verify and gate-verify prompts and retry prompts tell the reviewer about the sandbox user namespace and "unverifiable" (#332)', () => {
-  const { reviewerPrompt } = require('../../core/round-plan');
+  const { reviewerPrompt } = require('../scripts/runner/round-plan');
   for (const role of ['verify', 'gate-verify']) {
     const prompt = reviewerPrompt(role, { stateDir: '/state', round: 1, targetType: 'git', slug: 'feat-x' });
     assert.match(prompt, /user namespace/);
