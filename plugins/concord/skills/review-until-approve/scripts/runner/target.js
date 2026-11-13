@@ -154,4 +154,4 @@ function changedTrackedPath(before, after) {
   return null;
 }
 
-module.exports = { gitReviewSnapshot, gitHeadSha, gitDirty, trackedCheckoutInventory, changedTrackedPath };
+module.exports = { gitReviewSnapshot, gitHeadSha, gitDirty, trackedCheckoutInventory, changedTrackedPath, pathLeavesRoot };

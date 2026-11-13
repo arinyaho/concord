@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { gitDirty, trackedCheckoutInventory, changedTrackedPath } = require('../scripts/runner/target');
+const { gitDirty, trackedCheckoutInventory, changedTrackedPath, pathLeavesRoot } = require('../scripts/runner/target');
 const { tempDir } = require('../../../hooks/test/temp-dir');
 
 // A temp repository with two commits and a clean working tree.
@@ -156,4 +156,11 @@ test('tracked inventory: an uninitialized submodule directory over the name cap 
   fs.rmSync(path.join(dir, 'sub'), { recursive: true }); fs.mkdirSync(path.join(dir, 'sub'));
   for (let i = 0; i < 1001; i++) fs.writeFileSync(path.join(dir, 'sub', `f${String(i).padStart(4, '0')}`), '');
   assert.throws(() => inventoryOf(dir), /harness-failure.*inventory bound/);
+});
+
+test('tracked inventory: a parent on another Windows volume leaves the checkout', () => {
+  assert.strictEqual(pathLeavesRoot(path.win32.relative('C:\\repo', 'D:\\outside'), path.win32), true);
+  assert.strictEqual(pathLeavesRoot(path.win32.relative('C:\\repo', 'C:\\outside'), path.win32), true);
+  assert.strictEqual(pathLeavesRoot(path.win32.relative('C:\\repo', 'C:\\repo\\sub'), path.win32), false);
+  assert.strictEqual(pathLeavesRoot('..hidden'), false);
 });
