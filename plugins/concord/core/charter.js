@@ -82,8 +82,15 @@ function firstSubstantiveUserMessage(entries) {
   return null;
 }
 
-// List `<sid>.json` session model files, most-recent first, capped.
-function sessionModelFiles(stateDir, cap) {
+// A session record as the session-state writer stores it. Other JSON files in the state
+// directory are not sessions, whatever their name.
+function isSessionRecord(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && ['openLoops', 'decisions', 'nexts', 'facts'].every((key) => Array.isArray(value[key]));
+}
+
+// The most-recent `<sid>.json` session records, newest first, at most `cap` of them.
+function sessionRecords(stateDir, cap, excludeSid) {
   let names;
   try {
     names = fs.readdirSync(stateDir);
@@ -91,7 +98,7 @@ function sessionModelFiles(stateDir, cap) {
     return [];
   }
   const files = names
-    .filter((n) => n.endsWith('.json') && !/^(?:review-(?:agent-)?telemetry-[0-9a-f]{64}|telemetry-.+)\.json$/.test(n))
+    .filter((n) => n.endsWith('.json') && n.slice(0, -5) !== excludeSid)
     .map((n) => {
       const p = path.join(stateDir, n);
       let mtimeMs = 0;
@@ -100,33 +107,29 @@ function sessionModelFiles(stateDir, cap) {
       } catch (e) {
         /* ignore */
       }
-      return { sid: n.slice(0, -5), path: p, mtimeMs };
+      return { path: p, mtimeMs };
     })
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
-  return files.slice(0, cap);
+  const records = [];
+  for (const f of files) {
+    if (records.length >= cap) break;
+    let value;
+    try {
+      value = JSON.parse(fs.readFileSync(f.path, 'utf8'));
+    } catch (e) {
+      continue;
+    }
+    if (isSessionRecord(value)) records.push(value);
+  }
+  return records;
 }
 
 // Union the most-recent sessions' models into one, reusing mergeModel's dedup/cap/topic
 // logic. Fold oldest-first so the newest session wins per topic.
 function mergeSessions(stateDir, { excludeSid } = {}) {
-  const files = sessionModelFiles(stateDir, SESSIONS_MERGE_CAP)
-    .filter((f) => f.sid !== excludeSid)
-    .reverse(); // oldest first
   let acc = emptyModel();
-  for (const f of files) {
-    let sm;
-    try {
-      sm = JSON.parse(fs.readFileSync(f.path, 'utf8'));
-    } catch (e) {
-      continue;
-    }
-    acc = mergeModel(acc, {
-      openLoops: sm.openLoops || [],
-      decisions: sm.decisions || [],
-      nexts: sm.nexts || [],
-      resolved: [],
-      facts: sm.facts || [],
-    });
+  for (const sm of sessionRecords(stateDir, SESSIONS_MERGE_CAP, excludeSid).reverse()) {
+    acc = mergeModel(acc, { openLoops: sm.openLoops, decisions: sm.decisions, nexts: sm.nexts, resolved: [], facts: sm.facts });
   }
   return acc;
 }
