@@ -30,29 +30,6 @@ for (const layout of ['claude', 'codex']) test(`review runtime snapshot executes
   assert.equal(fs.existsSync(snapshot.root), false);
 });
 
-test('review-until-approve loads and invokes its snapshot and removes it after completion', () => {
-  const root = tempDir('review-runtime-driver-');
-  const scripts = path.join(root, 'skills', 'review-until-approve', 'scripts');
-  fs.mkdirSync(scripts, { recursive: true });
-  fs.mkdirSync(path.join(root, 'core'));
-  fs.mkdirSync(path.join(root, 'hooks'));
-  fs.mkdirSync(path.join(root, 'adapters', 'claude-code'), { recursive: true });
-  for (const name of ['locate.js', 'run-review.js']) {
-    fs.copyFileSync(path.join(__dirname, '../../skills/review-until-approve/scripts', name), path.join(scripts, name));
-  }
-  fs.writeFileSync(path.join(root, 'core', 'run-snapshot.js'), `module.exports = require(${JSON.stringify(require.resolve('../../core/run-snapshot'))});\n`);
-  fs.writeFileSync(path.join(root, 'core', 'review-cli.js'), 'exports.runMain = () => {};\n');
-  fs.writeFileSync(path.join(root, 'hooks', 'review-cli.js'), 'module.exports = require("../core/review-cli");\n');
-  fs.writeFileSync(path.join(root, 'adapters', 'claude-code', 'statedir.js'), 'exports.resolveStateDirFromCwd = () => "state";\n');
-  fs.writeFileSync(path.join(root, 'core', 'codex-review-runner.js'), `exports.runReviewUntilGreen = async (options) => ({ runtime: options.reviewRuntimeDir, cli: options.cliPath, publicCli: options.publicCliPath, module: __filename, cliExists: require('fs').existsSync(options.cliPath) });\n`);
-  const result = JSON.parse(execFileSync(process.execPath, [path.join(scripts, 'run-review.js'), '{}'], { cwd: tempDir('review-runtime-work-'), encoding: 'utf8' }));
-  assert.equal(result.cliExists, true);
-  assert.equal(result.module, path.join(result.runtime, 'engine', 'codex-review-runner.js'));
-  assert.equal(result.cli, path.join(result.runtime, 'bin', 'review-cli.js'));
-  assert.equal(result.publicCli, path.join(root, 'hooks', 'review-cli.js'));
-  assert.equal(fs.existsSync(result.runtime), false);
-});
-
 test('Codex sandbox executes the snapshot CLI while keeping its code and account credentials protected', (t) => {
   const { spawnSync } = require('node:child_process');
   const { reviewCodexConfig } = require('../../core/codex-review-runner');

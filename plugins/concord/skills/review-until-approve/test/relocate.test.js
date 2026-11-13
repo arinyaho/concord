@@ -16,12 +16,6 @@ function install(home, version) {
   fs.mkdirSync(path.join(root, '.codex-plugin'), { recursive: true });
   fs.writeFileSync(path.join(root, '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'concord', version }));
   fs.cpSync(path.join(SKILL_DIR, 'scripts'), path.join(root, 'skills', 'review-until-approve', 'scripts'), { recursive: true });
-  // approve.js needs the runner modules locate.js looks for: the shared core as engine/ and the review CLI as bin/.
-  const plugin = path.join(SKILL_DIR, '..', '..');
-  fs.cpSync(path.join(plugin, 'core'), path.join(root, 'engine'), { recursive: true });
-  fs.cpSync(path.join(plugin, 'adapters', 'codex'), path.join(root, 'engine'), { recursive: true });
-  fs.mkdirSync(path.join(root, 'bin'), { recursive: true });
-  fs.copyFileSync(path.join(plugin, 'hooks', 'review-cli.js'), path.join(root, 'bin', 'review-cli.js'));
   return root;
 }
 

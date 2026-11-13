@@ -16,10 +16,9 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const lib = require('./lib');
 const publish = require('./publish');
-const { core } = require('./locate');
-const { writeFileAtomic } = require(path.join(core, 'atomic-write'));
-const { reclaimStaleLock } = require(path.join(core, 'run-lock'));
-const { ADDRESSABLE_PREFIXES } = require(path.join(core, 'artifact-contract'));
+const { writeFileAtomic } = require('./runner/atomic-write');
+const { reclaimStaleLock } = require('./runner/run-lock');
+const { ADDRESSABLE_PREFIXES } = require('./runner/artifact-contract');
 const broker = require('./broker');
 
 // The review clone's .git is writable for an unconfined reviewer, which could plant refs/replace/* to make a head read differently; evidence is read as stored.
@@ -85,8 +84,8 @@ function lock(file) {
 
 // The reviewer reads attacker-controlled files, so it gets an allowlist, not the whole environment.
 const ENV_ALLOWED = /^(PATH|USER|LOGNAME|LANG|LC_\w+|TERM|TMPDIR|TZ|(HTTPS?|NO|ALL)_PROXY|(https?|no|all)_proxy|SSL_CERT_(FILE|DIR)|NODE_EXTRA_CA_CERTS)$/;
-// HOME is an empty directory; the engine keeps the reviewer from the real home (`reviewRealHome`) with a Codex
-// file-system profile (Codex only). The Codex engine copies auth.json from CODEX_HOME into a home of its own.
+// HOME is an empty directory; the runner keeps the reviewer from the real home (`reviewRealHome`) with a Codex
+// file-system profile (Codex only). It copies auth.json from CODEX_HOME into a home of its own.
 function reviewerEnv(provider, claudeConfig, home, realClaudeConfig) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => ENV_ALLOWED.test(name)));
   env.HOME = home;

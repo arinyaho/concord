@@ -4,10 +4,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, spawnSync, execFileSync } = require('node:child_process');
-const { artifactDestinationFromPrompt } = require('../../../core/review-artifact');
+const { artifactDestinationFromPrompt } = require('../scripts/runner/review-artifact');
 const { tempDir } = require('../../../hooks/test/temp-dir');
-const { reviewerPrompt } = require('../../../core/round-plan');
-const { normalizeArtifact } = require('../../../core/artifact-contract');
+const { reviewerPrompt } = require('../scripts/runner/round-plan');
+const { normalizeArtifact } = require('../scripts/runner/artifact-contract');
 
 const APPROVE = path.join(__dirname, '..', 'scripts', 'approve.js');
 const sh = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
@@ -1253,7 +1253,7 @@ test('a review that quotes the access or refresh token from the credentials file
 });
 
 test('a repaired multiline span crossing into a diff hunk is published at the first overlapping line', () => {
-  const { prepareAnchors, applyAnchors } = require('../../../core/review-anchors');
+  const { prepareAnchors, applyAnchors } = require('../scripts/runner/review-anchors');
   const w = world();
   const rows = Array.from({ length: 30 }, (_, index) => `context ${index + 1}`);
   const base = push(w, { 'a.js': rows.join('\n') + '\n' }, 'long base');
@@ -1289,7 +1289,7 @@ test('a submodule bump is reviewed on the submodule diff: the reviewer sees lib/
 const startRound = (w) => { w.approve('start', 'o/r', '5'); return JSON.parse(w.approve('round', 'o/r', '5').stdout); };
 
 test('a repaired root finding is inline while a submodule finding stays in the body', () => {
-  const { prepareAnchors, applyAnchors, readCommittedSource } = require('../../../core/review-anchors');
+  const { prepareAnchors, applyAnchors, readCommittedSource } = require('../scripts/runner/review-anchors');
   const w = world({}, { sub: {} });
   libInfo(w, { private: false });
   const head = sh(w.src, 'rev-parse', 'HEAD');
