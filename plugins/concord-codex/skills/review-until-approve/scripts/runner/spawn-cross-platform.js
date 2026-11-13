@@ -119,7 +119,7 @@ function unquotePathEntry(dir) {
 // on this exact code (PR #113) caught a real Windows footgun: with
 // `shell: true`, cmd.exe's own bare-name resolution searches the child
 // process' cwd BEFORE PATH, and every call site behind this helper sets
-// cwd to the repository under review. review-until-green exists to review
+// cwd to the repository under review. The runner exists to review
 // arbitrary, untrusted checkouts -- one containing a committed `git.cmd`
 // or `codex.cmd` at its root could have that file executed the moment the
 // review starts, before any reviewer or sandbox logic runs at all. Passing

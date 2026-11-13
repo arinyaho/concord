@@ -6,7 +6,7 @@ const path = require('node:path');
 // and the slug replaces '/', '\', ':' and '.' with '-' (a `.claude` segment becomes
 // `--claude`). Shared by any CLI that needs the same project-scoped state dir a
 // cwd-driven hook would resolve to. Callers apply their own env-var override (e.g.
-// CHARTER_STATE_DIR, REVIEW_STATE_DIR) on top of this -- this function has no
+// CHARTER_STATE_DIR) on top of this -- this function has no
 // override of its own.
 function resolveStateDirFromCwd() {
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');

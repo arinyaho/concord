@@ -52,12 +52,11 @@ function gitReviewSnapshot(repoRoot, baseCommit, headCommit, { distinct = false 
   return { leftSha, headSha: headCommit, reviewText, paths: [...new Set(paths)].sort() };
 }
 
-// Moved verbatim from review-cli.js round-start L434 (`git rev-parse HEAD`).
 function gitHeadSha(repoRoot) {
   return sh('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).trim();
 }
 
-// The CLI may hold its own lock inside the repository. Ignore only untracked
+// A caller may hold its own lock inside the repository. Ignore only untracked
 // files in that exact lock directory, never tracked changes or other state.
 function gitDirty(repoRoot, reviewLock = null) {
   const relative = reviewLock && path.relative(path.resolve(repoRoot), path.resolve(reviewLock));

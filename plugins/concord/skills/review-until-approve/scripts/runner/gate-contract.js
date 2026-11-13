@@ -1,10 +1,8 @@
 'use strict';
 // Pure gate output-contract parsing/validation. No git, no process, no fs.
-// Moved out of engine.js so review-cli.js's `record`/`plan-fixes` can validate
-// subagent-written artifacts against the same contract the engine used to enforce.
 
 // Prefix-scoped: only the "gate:" prefix may carry a third segment
-// ("gate:class:slug" -- the gate namespace's id shape per lib/gate.js's
+// ("gate:class:slug" -- the gate namespace's id shape per fold.js's
 // foldGateFindings, which derives `class` from the id's middle segment).
 // Every other prefix ("correctness:slug", "intent:slug", ...) stays exactly
 // two segments -- "<prefix>:<slug>". Each segment is a-z0-9-, 1-80 chars.

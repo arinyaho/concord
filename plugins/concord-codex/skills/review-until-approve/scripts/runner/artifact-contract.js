@@ -283,11 +283,11 @@ function normalizeArtifact(name, raw, { addressed = false } = {}) {
     for (const entry of canonical.blocking) {
       if (rejectedIds.has(entry.id)) throw new ArtifactError('retry', `gate-verify lists "${entry.id}" as both rejected and blocking; a candidate is either a false positive or release-blocking`);
     }
-    // review-cli additionally requires each id to be a gate-review or gate-verify candidate
+    // review.js's fold additionally requires each id to be a gate candidate
   }
   // A gate candidate that restates a correctness candidate is recorded as a
   // duplicate, not rejected: the two verifiers run concurrently, so whether it
-  // is dropped depends on the correctness verdict, which review-cli folds in.
+  // is dropped depends on the correctness verdict, which review.js folds in.
   if (name === 'gate-verify' && parsed.duplicates !== undefined) {
     if (!Array.isArray(parsed.duplicates)) throw new ArtifactError('fatal', 'gate-verify artifact field "duplicates" must be an array');
     const correctnessPrefixes = allowedFindingPrefixes('verify');

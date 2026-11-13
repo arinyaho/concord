@@ -8,7 +8,7 @@ const { FINDING_ID_RULE } = require('./gate-contract');
 // guard pointed at the reviewer's own evidence. A reviewer that loses a tool it
 // was told to use (denied by the sandbox, missing, crashed) otherwise emits a
 // confident schema-valid verdict produced by a check it never ran -- which
-// artifact-normalize cannot distinguish from a real one. Declaring `blocked`
+// artifact normalization cannot distinguish from a real one. Declaring `blocked`
 // makes the round fail loudly instead, which is the correct outcome.
 // The Codex reviewer sandbox is a user namespace: a host owner it cannot map,
 // root included, shows up as uid 65534. A probe that checks ownership then
@@ -40,11 +40,10 @@ const FINDING_SPAN_CLAUSE = ' Each finding MUST include a continuous verbatim so
 
 // gate-review found the SAME defect class (a skill name missing from a
 // metadata-mirror file) three separate times, one file per round, across
-// three review-until-green rounds -- plugin.json, then marketplace.json, then
+// three review rounds -- plugin.json, then marketplace.json, then
 // README.md -- because it reported only the first occurrence it found each
 // round instead of sweeping for every file matching that pattern in one
-// pass. This clause closes that gap; keep it byte-identical between here and
-// review-driver.md's gate-review prompt (round-plan-sync.test.js enforces it).
+// pass. This clause closes that gap.
 const GATE_SWEEP_CLAUSE = ' If this finding is an instance of a pattern likely to recur elsewhere in the repository (a value, name, or reference that should be mirrored across multiple files), enumerate the repository files that actually exist and sweep those files for every other match in this same pass and report each occurrence as its own finding; do not assume optional paths such as a root package.json exist. If a named path is missing, skip it and continue the sweep. Treat rg exit status 1 as no matches, not as a tool failure. Treat rg exit status 2 as a blocked search only when the search itself failed (for example, an invalid invocation or a permission/I/O error); do not stop at the first instance and leave the rest for a later round to catch one at a time.';
 const GATE_VERIFY_PREFIX = allowedFindingPrefixes('gate-verify')[0];
 const CORRECTNESS_PREFIXES = allowedFindingPrefixes('correctness').map((prefix) => `${prefix}*`).join(' or ');
