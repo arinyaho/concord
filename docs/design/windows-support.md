@@ -1,6 +1,6 @@
 # Windows support
 
-Concord's production code paths run on native Windows (cmd.exe or PowerShell, no WSL or Git Bash required): the hook manifests of each distribution, every spawn of `codex`, `git`, `claude`, and `copilot`, and JSONL and diff line parsing. The spawn behavior is centralized in one shared helper, `core/spawn-cross-platform.js`, mirrored byte for byte into the Codex engine, instead of each call site patching its own options.
+Concord's production code paths run on native Windows (cmd.exe or PowerShell, no WSL or Git Bash required): the hook manifests of each distribution, every spawn of `codex`, `git`, `claude`, and `copilot`, and JSONL and diff line parsing. The spawn behavior is centralized in one helper, `spawn-cross-platform.js` in the `review-until-approve` runner, copied byte for byte into the Codex package with the skill, instead of each call site patching its own options.
 
 The recurring threat model is that Concord reviews an arbitrary, untrusted checkout. Nothing the reviewed repository contains (a committed `git.cmd`, a `node_modules/.bin` shim, a multi-line commit message, a branch name with shell metacharacters) may change which program runs or how its arguments are read.
 
@@ -19,7 +19,7 @@ The `commandWindows` strings follow three rules:
 
 ## Spawn helper
 
-`core/spawn-cross-platform.js` is applied at every spawn of `codex`, `git`, `claude`, and `copilot` in `core/target.js`, `core/codex-review-runner.js`, `core/review-cli.js`, and the Codex `bin/review-and-fix.js` entry point. On anything other than `win32` it passes options and arguments through unchanged.
+`spawn-cross-platform.js` is applied at every spawn of `codex`, `git`, `claude`, and `copilot` in the runner (`target.js`, `fold.js`, `launch.js` under `plugins/concord/skills/review-until-approve/scripts/runner/`). On anything other than `win32` it passes options and arguments through unchanged.
 
 On `win32`:
 
@@ -35,22 +35,20 @@ Escaping test cases use hardcoded expected outputs computed from `cross-spawn`'s
 Quoting does not stop cmd.exe from reading an embedded line break as a command separator, and reviewer prompts and commit messages are routinely multi-line.
 
 - On `win32`, the runner writes the prompt to the child's stdin instead of argv: `codex exec -` (the stdin sentinel), `claude -p` with no positional prompt, and `copilot` with no `-p`/`--prompt` (Copilot ignores piped stdin when that flag is present). POSIX keeps the prompt on argv.
-- `gitCommitFix` uses `git commit -F -` on every platform, so the commit message never travels on argv.
 - A no-op `'error'` listener is attached to the child's stdin before writing, so an `EPIPE` from a child that exits early becomes failed telemetry through the child's own error handling instead of crashing the review process.
 
 ## Line splitting
 
-`core/review-cli.js`, `core/extract.js`, and `adapters/claude-code/review-telemetry.js` split on `/\r?\n/`. `JSON.parse` already tolerates a trailing `\r`, but a blank CRLF line split on `'\n'` alone becomes the truthy string `'\r'`, survives `.filter(Boolean)`, and then fails to parse. The transcript readers split on `'\n'` and are correct as they are, because each line is trimmed before parsing.
+`core/extract.js` and the runner's `launch.js` and `provider-failure.js` split on `/\r?\n/`. `JSON.parse` already tolerates a trailing `\r`, but a blank CRLF line split on `'\n'` alone becomes the truthy string `'\r'`, survives `.filter(Boolean)`, and then fails to parse. The transcript readers split on `'\n'` and are correct as they are, because each line is trimmed before parsing.
 
 ## Bundle parity
 
-Drift tests assert that `plugins/concord-codex/engine/` stays byte-identical to the shared core files it vendors, including `spawn-cross-platform.js`.
+Drift tests assert that the Codex package's copy of the `review-until-approve` skill, `spawn-cross-platform.js` included, stays byte-identical to the shared skill.
 
 ## Non-goals
 
 - Windows CI.
 - Rewriting Unix-only test fixtures: symlink and `sh`/`bash` spawn fixtures, executable-bit `chmodSync` fixtures, and the read-only-mode fixtures of the release-script test.
-- Rewriting user-authored shell commands in `review.config.json`.
 
 ## Residual exposure
 
