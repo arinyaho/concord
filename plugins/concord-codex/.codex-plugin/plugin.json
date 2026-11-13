@@ -1,6 +1,6 @@
 {
   "name": "concord",
-  "version": "0.9.1-beta.73",
+  "version": "0.9.1-beta.74",
   "description": "Codex harness-engineering tools: session-state checkpoint, cross-session charter, review-and-fix, review-until-approve, pr-to-merge, initiative-to-prs, ticket-to-pr, provider-neutral ticket-writing, proposal-package-authoring, and coordinate-sessions.",
   "author": {
     "name": "arinyaho"
