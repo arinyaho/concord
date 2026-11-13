@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-// On Windows, a globally-installed CLI (codex, claude, copilot, and any
+// On Windows, a globally-installed CLI (codex, claude, and any
 // npm-shimmed tool) resolves on PATH to a `.cmd`/`.bat` wrapper, not a real
 // executable. child_process.spawn/execFileSync cannot exec a `.cmd` directly
 // without `shell: true` (Node throws ENOENT/EINVAL otherwise), because

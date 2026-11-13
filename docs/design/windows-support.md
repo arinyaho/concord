@@ -37,7 +37,7 @@ Escaping test cases use hardcoded expected outputs computed from `cross-spawn`'s
 Quoting does not stop cmd.exe from reading an embedded line break as a command separator, and reviewer prompts and commit messages are routinely multi-line.
 
 - On `win32`, the runner writes the prompt to the child's stdin instead of argv: `codex exec -` (the stdin sentinel) and `claude -p` with no positional prompt. POSIX keeps the prompt on argv.
-- A no-op `'error'` listener is attached to the child's stdin before writing, so an `EPIPE` from a child that exits early becomes failed telemetry through the child's own error handling instead of crashing the review process.
+- A no-op `'error'` listener is attached to the child's stdin before writing, so an `EPIPE` from a child that exits early fails the launch through the child's own error handling instead of crashing the review process.
 
 ## Line splitting
 

@@ -1658,7 +1658,7 @@ test('a follow-up round gives each reviewer role only the prior findings of its 
   w.approve('start', 'o/r', '5');
   w.approve('round', 'o/r', '5');
   const options = w.calls()[1];
-  const context = { stateDir: '/s', round: 2, targetType: 'git', slug: 'concord-pr-5', gateMode: 'design-conformance', reviewerGuidance: options.reviewerGuidance ?? null, priorFindings: options.priorFindings ?? [] };
+  const context = { stateDir: '/s', round: 2, slug: 'concord-pr-5', priorFindings: options.priorFindings ?? [] };
   const correctness = reviewerPrompt('correctness', context);
   const gate = reviewerPrompt('gate', context);
   // A reviewer that follows the prompt raises again every prior id it is told about.
