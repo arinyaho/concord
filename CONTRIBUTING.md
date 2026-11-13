@@ -4,13 +4,13 @@ Where to look first:
 
 | Path | What lives there |
 | --- | --- |
-| `plugins/concord/core/` | The charter and session-state logic, and the review engine that `review-until-approve` runs. `plugins/concord-codex/engine/` holds the same files plus harness-specific additions. |
-| `plugins/concord/skills/` | The shared workflow skills (`SKILL.md` per skill). `node plugins/concord-codex/bin/bundle.mjs` copies them into the Codex package. |
+| `plugins/concord/core/` | The charter and session-state logic. `plugins/concord-codex/engine/` holds the same files, except the ones listed in `plugins/concord-codex/bin/bundle-exclusions.mjs` (`grep-sweep-reminder.js`, whose hook the Codex plugin does not register), plus the Codex adapters. |
+| `plugins/concord/skills/` | The shared workflow skills (`SKILL.md` per skill, with a skill's own scripts and tests next to it). `node plugins/concord-codex/bin/bundle.mjs` copies them, without their tests, into the Codex package. |
 | `plugins/concord/agents/` | Agent definitions for Claude Code. The reviewer and the implementer have the same text as a reference file in their skill, which Codex uses. |
 | `plugins/*/hooks/`, `plugins/concord/adapters/`, `plugins/concord/commands/`, `plugins/concord-codex/commands/` | Per-harness glue and slash commands. |
-| `plugins/concord/hooks/test/` | The plugin test suite. |
+| `plugins/concord/hooks/test/`, `plugins/concord/skills/*/test/` | The plugin test suite. |
 | `docs/design/` | Design documents and decision records. |
-| `scripts/dod.mjs`, `review.config.json` | The plugin-install end-to-end check, and the configuration that names it as this repository's definition of done for the review engine. |
+| `scripts/dod.mjs` | The plugin-install end-to-end check, this repository's local definition of done. |
 | `VERSION`, `scripts/release-version.mjs` | Release version and the script that applies it to every manifest. |
 | `.github/workflows/` | CI. |
 
@@ -23,7 +23,7 @@ find plugins -path '*/test/*.test.js' -type f -print0 | xargs -0 -r node --test
 
 A plugin test creates a temporary directory with `tempDir(prefix)` from `plugins/concord/hooks/test/temp-dir.js`, which removes it when the test file's process exits; `temp-dir.test.js` fails on a test file that calls `mkdtemp` directly.
 
-Open a pull request against `main`; CI runs the same checks for changes under `plugins/`, `services/` (each service has its own workflow), `VERSION`, and the marketplace manifests; CI does not run the plugin-install end-to-end tests or cover `scripts/dod.mjs` and `review.config.json`, so run `node scripts/dod.mjs` locally for changes to those files, to `plugins/`, or to the marketplace manifests. Keep each PR to one coherent change.
+Open a pull request against `main`; CI runs the same checks for changes under `plugins/`, `services/` (each service has its own workflow), `VERSION`, and the marketplace manifests; CI does not run the plugin-install end-to-end tests or cover `scripts/dod.mjs`, so run `node scripts/dod.mjs` locally for changes to it, to `plugins/`, or to the marketplace manifests. Keep each PR to one coherent change.
 
 ## Versioning
 

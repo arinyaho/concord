@@ -21,9 +21,7 @@
 // ever adds a reminder, never blocks anything.
 //
 // Residual exposure: per-session counters persist under the transcript's state dir
-// (adapters/claude-code/grep-sweep-reminder.js) and are never cleaned up, matching the
-// existing review-telemetry state files in the same directory — not a new gap, but not
-// solved here either.
+// (adapters/claude-code/grep-sweep-reminder.js) and are never cleaned up.
 const THRESHOLD = 10;
 
 // grep/egrep/fgrep/rg as a standalone command word, not a substring of an

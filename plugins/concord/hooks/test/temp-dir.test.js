@@ -8,10 +8,19 @@ const { tempDir } = require('./temp-dir');
 
 const DIRECT_CALL = /\bmkdtemp(Sync)?\s*\(/;
 
-function filesCallingMkdtemp(dir) {
-  return fs.readdirSync(dir)
-    .filter((name) => name.endsWith('.test.js'))
-    .filter((name) => DIRECT_CALL.test(fs.readFileSync(path.join(dir, name), 'utf8')));
+const PLUGINS = path.join(__dirname, '..', '..', '..');
+
+// Every *.test.js below `root` inside a `test` directory, as CI selects them (`find plugins -path '*/test/*.test.js'`), relative to `root`.
+function testFiles(root) {
+  return fs.readdirSync(root, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.test.js'))
+    .map((entry) => path.relative(root, path.join(entry.parentPath, entry.name)))
+    .filter((file) => file.split(path.sep).slice(0, -1).includes('test'))
+    .sort();
+}
+
+function filesCallingMkdtemp(root) {
+  return testFiles(root).filter((file) => DIRECT_CALL.test(fs.readFileSync(path.join(root, file), 'utf8')));
 }
 
 // Exercise the exit handler in a real test process without rerunning an entire
@@ -55,12 +64,17 @@ test('creates temporary directories', () => {
 test('the check flags a test file that calls mkdtemp directly', () => {
   const dir = tempDir('temp-dir-check-');
   // The call is assembled at run time so that this file does not match the check itself.
-  fs.writeFileSync(path.join(dir, 'direct.test.js'), `fs.${'mkdtemp'}Sync(path.join(os.tmpdir(), 'x-'));\n`);
-  fs.writeFileSync(path.join(dir, 'helper.test.js'), "tempDir('x-');\n");
-  assert.deepStrictEqual(filesCallingMkdtemp(dir), ['direct.test.js']);
+  for (const sub of ['a/test', 'b/test/nested', 'c']) fs.mkdirSync(path.join(dir, sub), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'a/test/direct.test.js'), `fs.${'mkdtemp'}Sync(path.join(os.tmpdir(), 'x-'));\n`);
+  fs.writeFileSync(path.join(dir, 'b/test/nested/deep.test.js'), `fs.${'mkdtemp'}(path.join(os.tmpdir(), 'x-'), cb);\n`);
+  fs.writeFileSync(path.join(dir, 'a/test/helper.test.js'), "tempDir('x-');\n");
+  fs.writeFileSync(path.join(dir, 'c/outside.test.js'), `fs.${'mkdtemp'}Sync('x-');\n`);
+  assert.deepStrictEqual(filesCallingMkdtemp(dir), [path.join('a', 'test', 'direct.test.js'), path.join('b', 'test', 'nested', 'deep.test.js')]);
 });
 
-test('no test file calls mkdtemp outside temp-dir.js', () => {
-  const offenders = filesCallingMkdtemp(__dirname);
-  assert.deepStrictEqual(offenders, [], 'create temporary directories with tempDir() from ./temp-dir.js');
+test('no plugin test file that CI runs calls mkdtemp outside temp-dir.js', () => {
+  const files = testFiles(PLUGINS);
+  assert.ok(files.includes(path.join('concord', 'hooks', 'test', 'temp-dir.test.js')));
+  assert.ok(files.includes(path.join('concord', 'skills', 'review-until-approve', 'test', 'review.test.js')));
+  assert.deepStrictEqual(filesCallingMkdtemp(PLUGINS), [], 'create temporary directories with tempDir() from plugins/concord/hooks/test/temp-dir.js');
 });

@@ -5,7 +5,6 @@
 const IDENTITIES = {
   claude: { engine: 'claude', provider: 'anthropic', providerSchema: 'claude-print-json-v1' },
   codex: { engine: 'codex', provider: 'openai', providerSchema: 'codex-exec-json-v1' },
-  copilot: { engine: 'copilot', provider: 'github', providerSchema: 'copilot-prompt-v1' },
 };
 const MESSAGES = {
   authentication: 'Provider authentication failed.',
@@ -17,7 +16,7 @@ const MESSAGES = {
 const EXECUTABLE_SOURCES = new Set(['CONCORD_CODEX_BIN', 'CODEX_CLI_PATH', 'PATH', 'macOS ChatGPT app']);
 const KINDS = new Set(['subprocess-exit', 'timeout', 'signal', 'interrupted', 'provider-error']);
 const SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGABRT', 'SIGSEGV', 'SIGHUP', 'SIGQUIT', 'SIGPIPE', 'SIGBUS', 'SIGILL', 'SIGFPE']);
-const ROLES = new Set(['plan', 'correctness', 'verify', 'intent', 'gate', 'gate-verify', 'gate-review', 'fix', 'certify', 'gate-panel-ac-coverage', 'gate-panel-design-conformance', 'gate-panel-silent-gap', 'gate-panel-threat-model', 'gate-panel-cross-context', 'gate-panel-verify']);
+const ROLES = new Set(['correctness', 'verify', 'intent', 'gate', 'gate-verify']);
 
 function normalizeProviderFailure(failure) {
   const role = ROLES.has(failure.role) ? failure.role : 'provider';
@@ -87,27 +86,9 @@ function classify(result, engine) {
 }
 
 function providerFailure(input, result) {
-  const kind = result?.interrupted || result?.reviewFailure?.kind === 'interrupted' ? 'interrupted' : result?.timedOut || result?.reviewFailure?.kind === 'timeout' ? 'timeout' : result?.signal ? 'signal' : result instanceof Error ? 'provider-error' : 'subprocess-exit';
+  const kind = result?.interrupted ? 'interrupted' : result?.timedOut ? 'timeout' : result?.signal ? 'signal' : result instanceof Error ? 'provider-error' : 'subprocess-exit';
   return normalizeProviderFailure({ role: input.role, kind, exitCode: result?.status, signal: result?.signal,
-    diagnostic: { classification: classify(result, input.provider), engine: input.provider, executable: result?.executable || result?.telemetry?.executable } });
+    diagnostic: { classification: classify(result, input.provider), engine: input.provider, executable: result?.executable } });
 }
 
-function reviewContinuation(ledger) {
-  const execution = ledger?.execution;
-  const retry = execution?.planRetry;
-  const transport = execution?.planTransportRetry;
-  const planEvidence = execution?.normalizedPlan || execution?.completed?.includes('plan') || execution?.planRepairPending;
-  const blockedMethodFailure = execution?.blockedMethodFailure;
-  const blockedMethodLatched = ['gate', 'gate-verify'].includes(blockedMethodFailure?.role)
-    && blockedMethodFailure.kind === 'blocked-method' && blockedMethodFailure.retryable === false;
-  const blockedMethodCurrent = ['gate', 'gate-verify'].includes(execution?.failure?.role)
-    && execution.failure.kind === 'blocked-method' && execution.failure.retryable === false;
-  const terminal = retry?.state === 'exhausted'
-    || transport?.state === 'exhausted'
-    || (retry?.launched && retry.state !== 'accepted' && !planEvidence
-      && !(transport?.state === 'pending' && transport.attempts === 0))
-    || blockedMethodLatched || blockedMethodCurrent;
-  return { nextAction: terminal ? 'terminal-handoff' : 'resume', retryable: !terminal };
-}
-
-module.exports = { providerFailure, normalizeProviderFailure, reviewContinuation };
+module.exports = { providerFailure, normalizeProviderFailure };

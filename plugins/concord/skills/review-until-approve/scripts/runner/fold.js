@@ -51,9 +51,8 @@ function readReviewSource(repoRoot, file) {
 // reviewed head equal those of an examined changed path is covered: the
 // generated bundle copies are byte copies of their source, which bundle-drift
 // tests enforce. A deleted path has no blob and must be listed by name.
-function unexaminedPaths(repoRoot, ledger, changed, examinedList, base) {
+function unexaminedPaths(repoRoot, head, changed, examinedList, base) {
   const examined = new Set(examinedList);
-  const head = ledger.target?.head_sha;
   let missing = changed.filter((file) => !examined.has(file));
   if (!missing.length || !head) return missing;
   // The old path of a rename between the round's base and head has no blob at
@@ -90,18 +89,17 @@ function toGateFinding(f) {
   return { id: f.id, class: cls, file: f.file, evidence: f.span || '', requirement: f.requirement || '', summary: f.summary };
 }
 
-// Fold a round's gate-review candidates + gate-verify verdict + the ledger's
-// dismissed set into the open gate findings for this round. Report-only:
+// Fold a round's gate candidates and the gate-verify verdict into the open
+// gate findings for this round. Report-only:
 // deliberately NOT filtered to changed files (the cross-context case is an
 // UNCHANGED sibling that a changed line's guarantee depends on -- filtering to
 // changed files, as the intent detector does, would drop exactly the class the
 // gate exists to catch). Each finding is re-derived fresh every round, so a
 // later fix that resolves a gap simply stops the gate raising it.
-function foldGateFindings({ gateFindings, verifyRejectedIds, dismissedIds }) {
+function foldGateFindings({ gateFindings, verifyRejectedIds }) {
   const rejected = new Set(verifyRejectedIds || []);
-  const dismissed = new Set(dismissedIds || []);
   return (gateFindings || [])
-    .filter((f) => !rejected.has(f.id) && !dismissed.has(f.id))
+    .filter((f) => !rejected.has(f.id))
     .map((f) => ({ ...toGateFinding(f), ...(f.releaseBlocking !== undefined ? { releaseBlocking: f.releaseBlocking } : {}), ...(f.rationale !== undefined ? { rationale: f.rationale } : {}) }));
 }
 

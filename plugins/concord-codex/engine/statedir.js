@@ -5,8 +5,8 @@ const path = require('node:path');
 // Codex StateDirPort. Rooted at Codex's config dir (CODEX_HOME, default ~/.codex),
 // namespaced under `concord/` so Concord's per-project state never collides with
 // Codex's own sessions/, plugins/, logs. Same cwd->slug encoding the Claude Code
-// resolver uses. Like that resolver, this has NO env override of its own --
-// REVIEW_STATE_DIR is applied one layer up by core/review-cli.js's resolveStateDir().
+// resolver uses. Like that resolver, this has NO env override of its own; callers
+// apply theirs (e.g. CHARTER_STATE_DIR) on top of it.
 function resolveStateDirFromCwd() {
   const configDir = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
   const slug = process.cwd().replace(/[\\/:.]/g, '-');

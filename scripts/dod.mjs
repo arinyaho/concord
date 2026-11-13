@@ -2,7 +2,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-// Repo definition of done, invoked by review.config.json. Runs only what the
+// Repo definition of done, run locally. Runs only what the
 // pull-request workflow cannot: the plugin-install e2e, which needs the claude
 // and codex CLIs. CI runs every other test, so repeating them here only
 // adds local time. Exit 78 (EX_CONFIG) means the environment could not be
@@ -26,7 +26,7 @@ export function main({ root, run = defaultRun, env = process.env, platform = pro
     if (probe.status !== 0) {
       const why = probe.error ? probe.error.message : `exit ${probe.status}`;
       log(`${cli} --version: ${why.length > 120 ? `${why.slice(0, 120)}...` : why}`);
-      // Short and last on purpose: the review handoff clips lines and shows only the tail.
+      // Short and last on purpose: a caller that clips output shows only the tail.
       log(`DoD environment error: ${cli} CLI is not usable. This is not an implementation failure.`);
       return EX_CONFIG;
     }

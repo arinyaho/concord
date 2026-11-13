@@ -57,7 +57,7 @@ test('codex review-until-approve is the shared skill without its tests and carri
   assert.ok(!fs.existsSync(path.join(bundled, 'test')));
   // The round's runner travels with the skill: nothing under its scripts reaches outside the skill directory.
   assert.strictEqual(typeof require(path.join(bundled, 'scripts/runner/review.js')).runReview, 'function');
-  for (const f of list(bundled).filter((name) => name.endsWith('.js'))) assert.doesNotMatch(fs.readFileSync(path.join(bundled, f), 'utf8'), /require\([^)]*(\.\.\/\.\.|engine|core|review-cli)[^)]*\)/, f);
+  for (const f of list(bundled).filter((name) => name.endsWith('.js'))) assert.doesNotMatch(fs.readFileSync(path.join(bundled, f), 'utf8'), /require\([^)]*(\.\.\/\.\.|engine|core)[^)]*\)/, f);
 });
 
 test('codex pr-to-merge is the shared skill without its tests', () => {
