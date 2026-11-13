@@ -467,6 +467,50 @@ test('guard fails a manifest that is a symlink, has a duplicated version key, is
   assert.match(compact.stderr, /plugin\.json: not in the form the release script writes/);
 });
 
+test('with several merge bases the guard passes only a head whose version files equal each of them', () => {
+  const { tmp, remote } = makeOrigin();
+  // main: A - A1 - M(merges S1); side: A - S1; head: A1 - H(merges S1). The merge bases of main and the head are A1 and S1.
+  const work = clone(remote, path.join(tmp, 'criss-cross'));
+  git(work, 'checkout', '-q', '-b', 'side');
+  fs.writeFileSync(path.join(work, 'side.txt'), 'side\n');
+  git(work, 'add', '-A');
+  git(work, 'commit', '-q', '-m', 'S1');
+  git(work, 'checkout', '-q', 'main');
+  fs.writeFileSync(path.join(work, 'main.txt'), 'main\n');
+  git(work, 'add', '-A');
+  git(work, 'commit', '-q', '-m', 'A1');
+  git(work, 'checkout', '-q', '-b', 'crossed');
+  git(work, 'merge', '-q', '--no-ff', '-m', 'H', 'side');
+  git(work, 'checkout', '-q', 'main');
+  git(work, 'merge', '-q', '--no-ff', '-m', 'M', 'side');
+  git(work, 'push', '-q', 'origin', 'main');
+  const guardHead = (name, mutate) => {
+    git(work, 'checkout', '-q', '-B', name, 'crossed');
+    if (mutate) {
+      mutate(work);
+      git(work, 'commit', '-q', '-am', name);
+    }
+    git(work, 'push', '-q', 'origin', `HEAD:refs/pull/${name}/head`);
+    const trusted = clone(remote, path.join(tmp, `trusted-${name}`));
+    git(trusted, 'fetch', '-q', '--no-tags', 'origin', `refs/pull/${name}/head:refs/pr/head`);
+    assert.equal(git(trusted, 'merge-base', '--all', 'origin/main', 'refs/pr/head').split('\n').length, 2, 'two merge bases');
+    return runBump(trusted, 'guard', 'origin/main', 'refs/pr/head');
+  };
+  assert.equal(guardHead('same').status, 0, 'version files equal every merge base');
+  const edited = guardHead('edited', editDescription(CLAUDE));
+  assert.equal(edited.status, 1, 'a manifest edit cannot be judged');
+  assert.match(edited.stderr, /2 merge bases/);
+  assert.equal(guardHead('version', editFile('VERSION', () => '0.9.0-beta.10\n')).status, 1, 'a version change');
+  // The base moves on to a new version. A head that still equals every merge base passes, and one that copies the
+  // version of the base tip does not: it differs from what a merge would start from.
+  git(work, 'checkout', '-q', 'main');
+  fs.writeFileSync(path.join(work, 'VERSION'), '0.9.0-beta.10\n');
+  git(work, 'commit', '-q', '-am', 'bump');
+  git(work, 'push', '-q', 'origin', 'main');
+  assert.equal(guardHead('behind').status, 0, 'a head behind a bump of the base');
+  assert.equal(guardHead('copied', editFile('VERSION', () => '0.9.0-beta.10\n')).status, 1, 'a head that copies the version of the base tip');
+});
+
 test('push bumps a manifest whose description was edited by a merged pull request and changes only version fields', () => {
   const { tmp, remote } = makeOrigin();
   const dir = clone(remote, path.join(tmp, 'edit'));

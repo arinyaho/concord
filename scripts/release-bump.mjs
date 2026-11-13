@@ -69,7 +69,9 @@ function matchesReleaseScript(baseRef, headRef, version) {
 // Throws unless the path is a regular file at the ref. A symbolic link's blob is its target text, so a link can read as the
 // expected content while the file the release script later writes through it holds something else.
 function requireRegularFile(ref, file) {
-  if (!/^100(644|755) blob /.test(git('ls-tree', ref, '--', file))) throw new Error('not a regular file');
+  const entry = git('ls-tree', ref, '--', file);
+  if (!entry) throw new Error('deleted or renamed away');
+  if (!/^100(644|755) blob /.test(entry)) throw new Error('not a regular file');
 }
 
 // The version string of a manifest at a ref, read as data. It throws when the path is not a regular file there, is not JSON,
@@ -90,13 +92,14 @@ function manifestVersion(ref, file, strict = false) {
 }
 
 function guard(baseRef, headRef) {
-  // With more than one merge base there is no single commit the pull request branched from, and the three-dot diff below would
-  // pick one of them. Such a head passes only when no version file differs from the base as it is now.
+  // With more than one merge base there is no single commit the pull request branched from, and a merge works from a base
+  // built out of all of them. Such a head passes only when every version file is the same at the head as at each merge base:
+  // then nothing the head carries can win a later merge, whatever the base has become by then.
   const forkPoints = git('merge-base', '--all', baseRef, headRef).split('\n').filter(Boolean);
   if (forkPoints.length !== 1) {
-    const differing = touchedVersionFiles(git('diff', '--name-only', '--no-renames', baseRef, headRef).split('\n').filter(Boolean));
-    if (differing.length === 0) return 0;
-    console.error(`The pull request and its base have ${forkPoints.length} merge bases, so a change to a version file cannot be judged; bring the branch up to date with a single merge of the base:\n${differing.join('\n')}`);
+    const differing = new Set(forkPoints.flatMap((point) => touchedVersionFiles(git('diff', '--name-only', '--no-renames', point, headRef).split('\n').filter(Boolean))));
+    if (differing.size === 0) return 0;
+    console.error(`The pull request and its base have ${forkPoints.length} merge bases, so a change to a version file cannot be judged; bring the branch up to date with a single merge of the base:\n${[...differing].join('\n')}`);
     return 1;
   }
   // Without rename detection a manifest moved away is listed under its own path, as the deletion it is.
