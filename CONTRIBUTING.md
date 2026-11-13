@@ -4,7 +4,7 @@ Where to look first:
 
 | Path | What lives there |
 | --- | --- |
-| `plugins/concord/core/` | The charter and session-state logic. `plugins/concord-codex/engine/` holds the same files plus the Codex adapters. |
+| `plugins/concord/core/` | The charter and session-state logic. `plugins/concord-codex/engine/` holds the same files, except the ones listed in `plugins/concord-codex/bin/bundle-exclusions.mjs` (`grep-sweep-reminder.js`, whose hook the Codex plugin does not register), plus the Codex adapters. |
 | `plugins/concord/skills/` | The shared workflow skills (`SKILL.md` per skill, with a skill's own scripts and tests next to it). `node plugins/concord-codex/bin/bundle.mjs` copies them, without their tests, into the Codex package. |
 | `plugins/concord/agents/` | Agent definitions for Claude Code. The reviewer and the implementer have the same text as a reference file in their skill, which Codex uses. |
 | `plugins/*/hooks/`, `plugins/concord/adapters/`, `plugins/concord/commands/`, `plugins/concord-codex/commands/` | Per-harness glue and slash commands. |

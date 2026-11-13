@@ -159,8 +159,8 @@ test('darwin: crossPlatformCommand is a no-op passthrough', () => {
 // resolveOnPath: closes the P1 finding from a GitHub Codex review on PR
 // #113 -- with shell:true, cmd.exe's own bare-name resolution searches the
 // child process' cwd before PATH, and every call site behind this helper
-// sets cwd to the repository under review (review-until-green's whole job
-// is reviewing an arbitrary, untrusted checkout). These tests use a real
+// sets cwd to the repository under review (the runner's whole job is
+// reviewing an arbitrary, untrusted checkout). These tests use a real
 // temp directory tree and a real (mocked) PATH/PATHEXT/cwd, not just
 // string assertions, so the "never finds it in cwd" guarantee is checked
 // against actual filesystem behavior.

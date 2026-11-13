@@ -6,7 +6,7 @@ Plugin tests created temporary directories with `fs.mkdtempSync` and did not rem
 
 Tests create temporary directories with `tempDir(prefix)` from `plugins/concord/hooks/test/temp-dir.js`. It creates the directory under `os.tmpdir()`, records it, and removes every recorded directory in a `process.once('exit')` handler. `node --test` runs each test file in its own process, so the directories live as long as the file's tests. The exit handler needs no test context, so the many helpers that create a directory outside a test body convert by replacing one call; `t.after` would have needed `t` passed into each of them.
 
-`temp-dir.test.js` holds the check: it fails when a `*.test.js` file in that directory calls `mkdtemp` or `mkdtempSync` directly, and it runs a fixture test file that creates directories, once passing and once failing, with `TMPDIR` set to an empty directory and asserts that the directory is still empty afterwards.
+`temp-dir.test.js` holds the check: it fails when any `*.test.js` file that CI runs (every one under a `test` directory below `plugins/`) calls `mkdtemp` or `mkdtempSync` directly, and it runs a fixture test file that creates directories, once passing and once failing, with `TMPDIR` set to an empty directory and asserts that the directory is still empty afterwards.
 
 This change is not stateful: each directory exists only for the life of one test process.
 

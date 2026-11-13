@@ -1,6 +1,6 @@
 # Windows support
 
-Concord's production code paths run on native Windows (cmd.exe or PowerShell, no WSL or Git Bash required): the hook manifests of each distribution, every spawn of `codex`, `git`, `claude`, and `copilot`, and JSONL and diff line parsing. The spawn behavior is centralized in one helper, `spawn-cross-platform.js` in the `review-until-approve` runner, copied byte for byte into the Codex package with the skill, instead of each call site patching its own options.
+Concord is designed to run on native Windows (cmd.exe or PowerShell, no WSL or Git Bash required) in three places: the hook manifests of each distribution, the reviewer launches and checkout reads of the `review-until-approve` runner, and JSONL and diff line parsing. The runner's spawn behavior is centralized in one helper, `spawn-cross-platform.js`, copied byte for byte into the Codex package with the skill, instead of each call site patching its own options.
 
 The recurring threat model is that Concord reviews an arbitrary, untrusted checkout. Nothing the reviewed repository contains (a committed `git.cmd`, a `node_modules/.bin` shim, a multi-line commit message, a branch name with shell metacharacters) may change which program runs or how its arguments are read.
 
@@ -19,7 +19,9 @@ The `commandWindows` strings follow three rules:
 
 ## Spawn helper
 
-`spawn-cross-platform.js` is applied at every spawn of `codex`, `git`, `claude`, and `copilot` in the runner (`target.js`, `fold.js`, `launch.js` under `plugins/concord/skills/review-until-approve/scripts/runner/`). On anything other than `win32` it passes options and arguments through unchanged.
+`spawn-cross-platform.js` is applied to the `codex` and `claude` reviewer launches in `launch.js` and to the `git` calls of `target.js` and `fold.js`, all under `plugins/concord/skills/review-until-approve/scripts/runner/`. Those are the spawns whose working directory is the reviewed checkout before and while reviewers run. On anything other than `win32` it passes options and arguments through unchanged.
+
+Other calls do not use the helper and pass a bare `git` or `gh` to `child_process` directly: the base resolution in `runner/review.js`, the committed-source reads in `runner/review-anchors.js`, the clone, fetch and object reads in `approve.js`, the GitHub polling in `watch.js`, and every `git` and `gh` call in `pr-to-merge.js`.
 
 On `win32`:
 
@@ -34,7 +36,7 @@ Escaping test cases use hardcoded expected outputs computed from `cross-spawn`'s
 
 Quoting does not stop cmd.exe from reading an embedded line break as a command separator, and reviewer prompts and commit messages are routinely multi-line.
 
-- On `win32`, the runner writes the prompt to the child's stdin instead of argv: `codex exec -` (the stdin sentinel), `claude -p` with no positional prompt, and `copilot` with no `-p`/`--prompt` (Copilot ignores piped stdin when that flag is present). POSIX keeps the prompt on argv.
+- On `win32`, the runner writes the prompt to the child's stdin instead of argv: `codex exec -` (the stdin sentinel) and `claude -p` with no positional prompt. POSIX keeps the prompt on argv.
 - A no-op `'error'` listener is attached to the child's stdin before writing, so an `EPIPE` from a child that exits early becomes failed telemetry through the child's own error handling instead of crashing the review process.
 
 ## Line splitting
@@ -53,7 +55,7 @@ Drift tests assert that the Codex package's copy of the `review-until-approve` s
 ## Residual exposure
 
 - Nothing here has run on a real Windows host. Hook manifests are verified at the schema and content level (`commandWindows` is present, references the right script, and never shells out to `sh` or `bash`), stdin prompt delivery is verified by mocking `child_process.spawn`, and escaping is verified as a pure string transform. Whoever first runs the Codex plugin on native Windows performs the first real check of `commandWindows`.
-- Copilot's stdin prompt path is less exercised by its own host than `-p`.
+- The direct `git` and `gh` calls listed under Spawn helper resolve the program by name through Node's own lookup, without the helper's exclusion of the reviewed checkout; the ones in `runner/review.js` and `runner/review-anchors.js` run with the checkout as working directory. Whether that lookup can select a program from the checkout on Windows has not been checked.
 - A `node` installed outside the two fixed locations, including most `nvm-windows` setups, is not found by the Codex hooks, which then do nothing.
 - The PowerShell path assumes Windows is installed on `C:`.
 - The resolved binary path is escaped but not quoted, as in `cross-spawn`, so a resolved path containing a space is not handled.
