@@ -59,17 +59,54 @@ function matchesReleaseScript(baseRef, headRef, version) {
       fs.writeFileSync(path.join(tmp, file), execFileSync('git', ['show', `${baseRef}:${file}`], { cwd: root, encoding: 'utf8' }));
     }
     execFileSync(process.execPath, [path.join(root, 'scripts/release-version.mjs'), version], { cwd: root, env: { ...process.env, CONCORD_VERSION_ROOT: tmp }, stdio: 'ignore' });
+    for (const file of VERSION_FILES) requireRegularFile(headRef, file);
     return VERSION_FILES.every((file) => fs.readFileSync(path.join(tmp, file), 'utf8') === execFileSync('git', ['show', `${headRef}:${file}`], { cwd: root, encoding: 'utf8' }));
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 }
 
+// Throws unless the path is a regular file at the ref. A symbolic link's blob is its target text, so a link can read as the
+// expected content while the file the release script later writes through it holds something else.
+function requireRegularFile(ref, file) {
+  const entry = git('ls-tree', ref, '--', file);
+  if (!entry) throw new Error('deleted or renamed away');
+  if (!/^100(644|755) blob /.test(entry)) throw new Error('not a regular file');
+}
+
+// The version string of a manifest at a ref, read as data. It throws when the path is not a regular file there, is not JSON,
+// or has no string version. With `strict`, the text must also be exactly what JSON.stringify writes for its own parse: a
+// duplicated key, which a parser resolves one way and a reader of the file another, does not survive that round trip.
+function manifestVersion(ref, file, strict = false) {
+  requireRegularFile(ref, file);
+  const text = execFileSync('git', ['show', `${ref}:${file}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  let manifest;
+  try {
+    manifest = JSON.parse(text);
+  } catch {
+    throw new Error('not valid JSON');
+  }
+  if (typeof manifest.version !== 'string') throw new Error('no string version');
+  if (strict && `${JSON.stringify(manifest, null, 2)}\n` !== text) throw new Error('not in the form the release script writes (two-space JSON, trailing newline, no duplicated key)');
+  return manifest.version;
+}
+
 function guard(baseRef, headRef) {
-  const changed = git('diff', '--name-only', `${baseRef}...${headRef}`).split('\n').filter(Boolean);
+  // With more than one merge base there is no single commit the pull request branched from, and a merge works from a base
+  // built out of all of them. Such a head passes only when every version file is the same at the head as at each merge base:
+  // then nothing the head carries can win a later merge, whatever the base has become by then.
+  const forkPoints = git('merge-base', '--all', baseRef, headRef).split('\n').filter(Boolean);
+  if (forkPoints.length !== 1) {
+    const differing = new Set(forkPoints.flatMap((point) => touchedVersionFiles(git('diff', '--name-only', '--no-renames', point, headRef).split('\n').filter(Boolean))));
+    if (differing.size === 0) return 0;
+    console.error(`The pull request and its base have ${forkPoints.length} merge bases, so a change to a version file cannot be judged; bring the branch up to date with a single merge of the base:\n${[...differing].join('\n')}`);
+    return 1;
+  }
+  // Without rename detection a manifest moved away is listed under its own path, as the deletion it is.
+  const changed = git('diff', '--name-only', '--no-renames', `${baseRef}...${headRef}`).split('\n').filter(Boolean);
   const touched = touchedVersionFiles(changed);
   if (touched.length === 0) return 0;
-  // The one pull request allowed to edit version files is a release: only version files change, and VERSION becomes a higher stable version.
+  // The one pull request allowed to change a version is a release: only version files change, and VERSION becomes a higher stable version.
   // The head is read as data with git show; its scripts never run.
   if (touched.length === changed.length && touched.includes('VERSION')) {
     try {
@@ -80,7 +117,22 @@ function guard(baseRef, headRef) {
       // A missing VERSION or an unrunnable release script is not a release; fall through to the failure.
     }
   }
-  console.error(`Pull requests do not edit version files except a release that sets a higher stable VERSION; main's release-bump workflow raises the version after merge:\n${touched.join('\n')}`);
+  // Otherwise VERSION stays put, and a manifest may change only while its version field stays identical.
+  // The comparison is with the commit the pull request branched from, as the diff above is: a bump that landed on the base since then is not the pull request's change.
+  const reasons = new Map();
+  for (const file of touched) {
+    if (file === 'VERSION') {
+      reasons.set(file, 'changed');
+      continue;
+    }
+    try {
+      if (manifestVersion(forkPoints[0], file) !== manifestVersion(headRef, file, true)) reasons.set(file, 'version changed');
+    } catch (error) {
+      reasons.set(file, error.message.split('\n')[0]);
+    }
+  }
+  if (reasons.size === 0) return 0;
+  console.error(`Pull requests do not change the version except a release that sets a higher stable VERSION; main's release-bump workflow raises the version after merge. A manifest may be edited while its version stays as it was:\n${[...reasons].map(([file, why]) => `${file}: ${why}`).join('\n')}`);
   return 1;
 }
 

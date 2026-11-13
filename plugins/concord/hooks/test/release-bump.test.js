@@ -256,7 +256,7 @@ test('version-guard fetches the event head without requiring a pull ref and runs
   assert.equal(git(trusted, 'rev-parse', 'refs/pr/head'), head);
   assert.equal(git(trusted, 'rev-parse', 'HEAD'), git(trusted, 'rev-parse', 'origin/main'));
   assert.equal(result.status, 1, result.stderr);
-  assert.match(result.stderr, /Pull requests do not edit version files/);
+  assert.match(result.stderr, /Pull requests do not change the version/);
 });
 
 // The release commit a maintainer merges: a human-authored change that sets a stable version in every release file.
@@ -365,4 +365,164 @@ test('isStableUpgrade accepts only a stable version above the base by SemVer pre
   for (const [base, head] of [['0.9.0', '0.9.0'], ['0.9.0', '0.8.9'], ['0.9.0-beta.9', '0.9.0-beta.10'], ['0.9.0', '1.0.0-rc.1'], ['0.9.0', '1.0.0+b'], ['0.9.0', '']]) {
     assert.equal(isStableUpgrade(base, head), false, `${base} -> ${head}`);
   }
+});
+
+const CLAUDE = 'plugins/concord/.claude-plugin/plugin.json';
+const CODEX = 'plugins/concord-codex/.codex-plugin/plugin.json';
+
+// Runs the trusted guard against a pull request head made by `mutate` on a checkout of origin/main.
+function guardPr(remote, tmp, name, mutate) {
+  const dir = clone(remote, path.join(tmp, `pr-${name}`));
+  mutate(dir);
+  git(dir, 'add', '-A');
+  git(dir, 'commit', '-q', '-m', name);
+  git(dir, 'push', '-q', 'origin', `HEAD:refs/pull/${name}/head`);
+  const trusted = clone(remote, path.join(tmp, `trusted-${name}`));
+  git(trusted, 'fetch', '-q', '--no-tags', 'origin', `refs/pull/${name}/head:refs/pr/head`);
+  return runBump(trusted, 'guard', 'origin/main', 'refs/pr/head');
+}
+
+const editFile = (file, change) => (dir) => {
+  const target = path.join(dir, file);
+  fs.writeFileSync(target, change(fs.readFileSync(target, 'utf8')));
+};
+const editDescription = (file) => editFile(file, (text) => {
+  const manifest = JSON.parse(text);
+  manifest.description = 'A corrected description';
+  return `${JSON.stringify(manifest, null, 2)}\n`;
+});
+
+test('guard passes a pull request that edits only a manifest description, alone or with unrelated files', () => {
+  const { tmp, remote } = makeOrigin();
+  assert.equal(guardPr(remote, tmp, '1', editDescription(CLAUDE)).status, 0);
+  assert.equal(guardPr(remote, tmp, '2', (dir) => {
+    editDescription(CODEX)(dir);
+    fs.writeFileSync(path.join(dir, 'README.md'), 'docs\n');
+  }).status, 0);
+});
+
+test('guard passes a description edit made before a bump landed on the base, and fails one that also reverts that bump', () => {
+  const { tmp, remote } = makeOrigin();
+  const bump = (dir) => {
+    for (const file of [CLAUDE, CODEX]) editFile(file, (text) => text.replace(/"version": "[^"]*"/, '"version": "0.9.0-beta.10"'))(dir);
+    fs.writeFileSync(path.join(dir, 'VERSION'), '0.9.0-beta.10\n');
+  };
+  // The pull request head is made first, from the base as it was; then the base moves.
+  const pr = clone(remote, path.join(tmp, 'pr-early'));
+  editDescription(CLAUDE)(pr);
+  git(pr, 'commit', '-q', '-am', 'edit description');
+  git(pr, 'push', '-q', 'origin', 'HEAD:refs/pull/early/head');
+  const base = clone(remote, path.join(tmp, 'base-bump'));
+  bump(base);
+  git(base, 'commit', '-q', '-am', 'bump');
+  git(base, 'push', '-q', 'origin', 'HEAD:main');
+  const trusted = clone(remote, path.join(tmp, 'trusted-early'));
+  git(trusted, 'fetch', '-q', '--no-tags', 'origin', 'refs/pull/early/head:refs/pr/head');
+  assert.equal(runBump(trusted, 'guard', 'origin/main', 'refs/pr/head').status, 0, 'the bump on the base is not the pull request\'s change');
+  // A head that branches after the bump and sets the version back changes the version.
+  assert.equal(guardPr(remote, tmp, 'revert', editFile(CLAUDE, (text) => text.replace(/"version": "[^"]*"/, '"version": "0.9.0-beta.9"'))).status, 1);
+});
+
+test('guard fails a pull request that changes a manifest or VERSION version, with or without a description edit', () => {
+  const { tmp, remote } = makeOrigin();
+  const setVersion = (file) => editFile(file, (text) => text.replace(/"version": "[^"]*"/, '"version": "0.9.0-beta.10"'));
+  assert.equal(guardPr(remote, tmp, '1', (dir) => {
+    editDescription(CLAUDE)(dir);
+    setVersion(CLAUDE)(dir);
+  }).status, 1, 'description and version');
+  assert.equal(guardPr(remote, tmp, '2', setVersion(CLAUDE)).status, 1, 'manifest version only');
+  const result = guardPr(remote, tmp, '3', editFile('VERSION', () => '0.9.0-beta.10\n'));
+  assert.equal(result.status, 1, 'VERSION only');
+  assert.match(result.stderr, /VERSION/);
+});
+
+test('guard fails a release that also edits a description and a manifest that is not valid JSON or has no string version', () => {
+  const { tmp, remote } = makeOrigin();
+  assert.equal(releasePr(remote, tmp, '1', '0.9.0', null, editDescription(CLAUDE)).status, 1, 'release with description edit');
+  assert.equal(guardPr(remote, tmp, '2', editFile(CLAUDE, (text) => `${text}}`)).status, 1, 'invalid JSON');
+  assert.equal(guardPr(remote, tmp, '3', editFile(CLAUDE, (text) => text.replace(/"version": "[^"]*"/, '"version": 9'))).status, 1, 'non-string version');
+  assert.equal(guardPr(remote, tmp, '4', (dir) => fs.rmSync(path.join(dir, CODEX))).status, 1, 'manifest deleted');
+});
+
+test('guard fails a manifest that is a symlink, has a duplicated version key, is renamed away, or is not in the written form', () => {
+  const { tmp, remote } = makeOrigin();
+  // A symlink's blob is its target text. Here that text is the unchanged manifest in the written form, so only the file-type check can reject it.
+  const asSymlink = (dir) => {
+    const manifest = path.join(dir, CLAUDE);
+    const text = fs.readFileSync(manifest, 'utf8');
+    fs.rmSync(manifest);
+    fs.symlinkSync(text, manifest);
+  };
+  const symlinked = guardPr(remote, tmp, '1', asSymlink);
+  assert.equal(symlinked.status, 1, 'symlink');
+  assert.match(symlinked.stderr, /plugin\.json: not a regular file/);
+  // A release whose manifest blob is byte-identical to the release script's output, but is a symlink, is not a release.
+  assert.equal(releasePr(remote, tmp, 'release-link', '0.9.0', null, asSymlink).status, 1, 'release with a symlinked manifest');
+  const before = (extra) => editFile(CLAUDE, (text) => text.replace(/(\n\s*)"version":/, `$1${extra},$1"version":`));
+  assert.equal(guardPr(remote, tmp, '2', before('"version": "99.0.0"')).status, 1, 'duplicated string version');
+  assert.equal(guardPr(remote, tmp, '3', before('"version": 9')).status, 1, 'duplicated non-string version');
+  assert.equal(guardPr(remote, tmp, '4', (dir) => fs.renameSync(path.join(dir, CODEX), path.join(dir, `${CODEX}.bak`))).status, 1, 'renamed away');
+  const compact = guardPr(remote, tmp, '5', editFile(CLAUDE, (text) => JSON.stringify(JSON.parse(text))));
+  assert.equal(compact.status, 1, 'not in the written form');
+  assert.match(compact.stderr, /plugin\.json: not in the form the release script writes/);
+});
+
+test('with several merge bases the guard passes only a head whose version files equal each of them', () => {
+  const { tmp, remote } = makeOrigin();
+  // main: A - A1 - M(merges S1); side: A - S1; head: A1 - H(merges S1). The merge bases of main and the head are A1 and S1.
+  const work = clone(remote, path.join(tmp, 'criss-cross'));
+  git(work, 'checkout', '-q', '-b', 'side');
+  fs.writeFileSync(path.join(work, 'side.txt'), 'side\n');
+  git(work, 'add', '-A');
+  git(work, 'commit', '-q', '-m', 'S1');
+  git(work, 'checkout', '-q', 'main');
+  fs.writeFileSync(path.join(work, 'main.txt'), 'main\n');
+  git(work, 'add', '-A');
+  git(work, 'commit', '-q', '-m', 'A1');
+  git(work, 'checkout', '-q', '-b', 'crossed');
+  git(work, 'merge', '-q', '--no-ff', '-m', 'H', 'side');
+  git(work, 'checkout', '-q', 'main');
+  git(work, 'merge', '-q', '--no-ff', '-m', 'M', 'side');
+  git(work, 'push', '-q', 'origin', 'main');
+  const guardHead = (name, mutate) => {
+    git(work, 'checkout', '-q', '-B', name, 'crossed');
+    if (mutate) {
+      mutate(work);
+      git(work, 'commit', '-q', '-am', name);
+    }
+    git(work, 'push', '-q', 'origin', `HEAD:refs/pull/${name}/head`);
+    const trusted = clone(remote, path.join(tmp, `trusted-${name}`));
+    git(trusted, 'fetch', '-q', '--no-tags', 'origin', `refs/pull/${name}/head:refs/pr/head`);
+    assert.equal(git(trusted, 'merge-base', '--all', 'origin/main', 'refs/pr/head').split('\n').length, 2, 'two merge bases');
+    return runBump(trusted, 'guard', 'origin/main', 'refs/pr/head');
+  };
+  assert.equal(guardHead('same').status, 0, 'version files equal every merge base');
+  const edited = guardHead('edited', editDescription(CLAUDE));
+  assert.equal(edited.status, 1, 'a manifest edit cannot be judged');
+  assert.match(edited.stderr, /2 merge bases/);
+  assert.equal(guardHead('version', editFile('VERSION', () => '0.9.0-beta.10\n')).status, 1, 'a version change');
+  // The base moves on to a new version. A head that still equals every merge base passes, and one that copies the
+  // version of the base tip does not: it differs from what a merge would start from.
+  git(work, 'checkout', '-q', 'main');
+  fs.writeFileSync(path.join(work, 'VERSION'), '0.9.0-beta.10\n');
+  git(work, 'commit', '-q', '-am', 'bump');
+  git(work, 'push', '-q', 'origin', 'main');
+  assert.equal(guardHead('behind').status, 0, 'a head behind a bump of the base');
+  assert.equal(guardHead('copied', editFile('VERSION', () => '0.9.0-beta.10\n')).status, 1, 'a head that copies the version of the base tip');
+});
+
+test('push bumps a manifest whose description was edited by a merged pull request and changes only version fields', () => {
+  const { tmp, remote } = makeOrigin();
+  const dir = clone(remote, path.join(tmp, 'edit'));
+  editDescription(CLAUDE)(dir);
+  git(dir, 'commit', '-q', '-am', 'edit description');
+  git(dir, 'push', '-q', 'origin', 'main');
+  const result = runBump(clone(remote, path.join(tmp, 'run')), 'push', 'main');
+  assert.equal(result.status, 0, result.stderr);
+  const log = originLog(tmp, remote);
+  assert.deepEqual(log.files, RELEASE_FILES);
+  const view = clone(remote, path.join(tmp, 'view'));
+  const manifest = JSON.parse(fs.readFileSync(path.join(view, CLAUDE), 'utf8'));
+  assert.equal(manifest.version, '0.9.0-beta.11'); // the seed commit and the edit are two merges
+  assert.equal(manifest.description, 'A corrected description');
 });
