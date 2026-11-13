@@ -68,7 +68,7 @@ function foldRound({ repoRoot, artifacts, changed, intentApplied, gateApplied })
       if (!byId.has(b.id)) throw harness(`gate-verify blocking id "${b.id}" is not a gate candidate`);
       blockingReasons.set(b.id, b.reason);
     }
-    gateOpen = foldGateFindings({ gateFindings: merged, verifyRejectedIds: rejected, dismissedIds: [] })
+    gateOpen = foldGateFindings({ gateFindings: merged, verifyRejectedIds: rejected })
       .map((f) => (blockingReasons.has(f.id) ? { ...f, blockingReason: blockingReasons.get(f.id) } : f));
   }
 
@@ -98,24 +98,24 @@ function foldRound({ repoRoot, artifacts, changed, intentApplied, gateApplied })
 // of another role's id, a kept candidate listed without its evidence and a mis-spelled slug are repaired without a model, once
 // per role and only while `repair` is allowed; anything else fails.
 function normalizeRole(role, raw, { repair = true } = {}) {
-  try { return { canonical: artifactContract.normalizeArtifact(role, raw, { addressed: true }), repaired: false }; } catch (e) {
+  try { return { canonical: artifactContract.normalizeArtifact(role, raw), repaired: false }; } catch (e) {
     if (!repair || !(e instanceof artifactContract.ArtifactError) || e.kind !== 'retry') throw harness(e.message);
     let parsed; try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
     const statusSpelling = parsed && typeof parsed.status === 'string' && ['ok', 'findings', 'clean'].includes(parsed.status.toLowerCase()) && parsed.status !== parsed.status.toLowerCase();
     const prefixes = artifactContract.allowedFindingPrefixes(role);
-    const items = parsed ? ['rejected', 'findings', 'groups', 'unverifiable'].flatMap((key) => Array.isArray(parsed[key]) ? parsed[key] : []) : [];
-    const idOf = (item) => typeof item === 'string' ? item : item && (item.id || item.findingIds);
-    const mixedNamespaces = /invalid id|invalid findingIds/.test(e.message)
-      && items.flatMap(idOf).some((id) => typeof id === 'string' && prefixes.some((prefix) => id.startsWith(prefix)))
-      && items.flatMap(idOf).some((id) => typeof id === 'string' && !prefixes.some((prefix) => id.startsWith(prefix)));
+    const items = parsed ? ['rejected', 'findings', 'unverifiable'].flatMap((key) => Array.isArray(parsed[key]) ? parsed[key] : []) : [];
+    const idOf = (item) => typeof item === 'string' ? item : item && item.id;
+    const mixedNamespaces = /invalid id/.test(e.message)
+      && items.map(idOf).some((id) => typeof id === 'string' && prefixes.some((prefix) => id.startsWith(prefix)))
+      && items.map(idOf).some((id) => typeof id === 'string' && !prefixes.some((prefix) => id.startsWith(prefix)));
     const invalidFinding = artifactContract.dropsInvalidFindings(role) && /finding\[\d+\] is missing "/.test(e.message);
-    const repairableSlug = /invalid id|invalid findingIds|must name the/.test(e.message) && artifactContract.repairsSlugs(role, raw);
+    const repairableSlug = /invalid id|must name the/.test(e.message) && artifactContract.repairsSlugs(role, raw);
     if (!statusSpelling && !mixedNamespaces && !invalidFinding && !repairableSlug) throw harness(e.message);
     let candidate;
     try {
       candidate = artifactContract.repairCandidate(role, raw);
       if (!artifactContract.preservesArtifact(role, raw, candidate)) throw new Error(`${role} repair candidate does not preserve the original evidence`);
-      return { canonical: artifactContract.normalizeArtifact(role, `${JSON.stringify(candidate)}\n`, { addressed: true }), repaired: true };
+      return { canonical: artifactContract.normalizeArtifact(role, `${JSON.stringify(candidate)}\n`), repaired: true };
     } catch (again) { throw harness(again.message); }
   }
 }
@@ -138,19 +138,14 @@ async function runRound(options, stateDir, codexHome) {
     if (gitDirty(repoRoot)) throw harness('the review checkout is modified before the review starts');
     const head = gitHeadSha(repoRoot);
     const baseSha = execFileSync('git', ['rev-parse', base], { cwd: repoRoot, encoding: 'utf8' }).trim();
-    const snapshot = gitReviewSnapshot(repoRoot, baseSha, head, { distinct: true });
+    const snapshot = gitReviewSnapshot(repoRoot, baseSha, head);
     const slug = targetSlug(ref);
     fs.writeFileSync(path.join(stateDir, `round-${ROUND}-diff.txt`), snapshot.reviewText);
     const intentApplied = !!options.intentFile;
-    let intentHash = null;
-    if (intentApplied) {
-      const intent = readIntentFile(path.resolve(options.intentFile));
-      writeFileAtomic(path.join(stateDir, `intent-${slug}.md`), intent.text);
-      intentHash = intent.sha;
-    }
+    if (intentApplied) writeFileAtomic(path.join(stateDir, `intent-${slug}.md`), readIntentFile(path.resolve(options.intentFile)).text);
     // The broad pair (gate, gate-verify) reads the whole repository; a round that reviews only a delta skips it.
     const gateApplied = !options.noBroad;
-    const context = { stateDir, round: ROUND, targetType: 'git', dodDeferred: true, dodPending: false, priorIntentIds: [], slug, gateMode: 'pair', gateApplied, intentHash, reviewerGuidance: null, priorFindings: options.priorFindings || [], reviewLanguage: options.reviewLanguage || null, classify: true, addressable: options.addressable || [], description: options.description || '' };
+    const context = { stateDir, round: ROUND, priorIntentIds: [], slug, gateApplied, priorFindings: options.priorFindings || [], reviewLanguage: options.reviewLanguage || null, addressable: options.addressable || [], description: options.description || '' };
     const roles = [...(intentApplied ? ['intent'] : []), 'correctness', ...(gateApplied ? ['gate'] : []), 'verify', ...(gateApplied ? ['gate-verify'] : [])];
     const roleArtifacts = new Map(roles.map((role) => [role, artifactDestinationFromPrompt(reviewerPrompt(role, context), stateDir)]));
     const anchorArtifact = path.join(stateDir, `round-${ROUND}-anchors.json`);
@@ -190,7 +185,7 @@ async function runRound(options, stateDir, codexHome) {
       checkReviewCheckout();
       checkProtected(ownOutput);
       const launched = {
-        ...input, repoRoot, stateDir, provider: reviewer, untrustedCheckout: true,
+        ...input, repoRoot, stateDir, provider: reviewer,
         ...(options.reviewerModel ? { requestedModel: options.reviewerModel } : {}),
         ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
         ...(options.subprocessTimeoutMs ? { timeoutMs: options.subprocessTimeoutMs } : {}),
@@ -229,7 +224,7 @@ async function runRound(options, stateDir, codexHome) {
       if (role === 'correctness') {
         // Every changed path must be listed as examined. Only the reviewer can say it read a file, so one re-run names the paths it left out.
         // A role gets one correction: an artifact that took the repair is not re-run, and the re-run's artifact is not repaired.
-        const missingAfter = (artifact) => unexaminedPaths(repoRoot, { target: { head_sha: head } }, snapshot.paths, artifact.examined, snapshot.leftSha);
+        const missingAfter = (artifact) => unexaminedPaths(repoRoot, head, snapshot.paths, artifact.examined, snapshot.leftSha);
         let missing = missingAfter(canonical);
         if (missing.length && repaired) throw harness(`correctness coverage is incomplete; missing changed file(s): ${missing.join(', ')}; the artifact was already repaired once`);
         if (missing.length) {

@@ -41,11 +41,10 @@ function parseNulPaths(raw, label) {
   return paths;
 }
 
-// distinct: the range is the review base against the head; when the merge base is the head itself there is nothing to review.
-// A range from an earlier reviewed head (DoD retry, rerun) may legitimately be empty.
-function gitReviewSnapshot(repoRoot, baseCommit, headCommit, { distinct = false } = {}) {
-  const leftSha = baseCommit ? sh('git', ['merge-base', baseCommit, headCommit], { cwd: repoRoot }).trim() : headCommit;
-  if (distinct && leftSha === headCommit) throw new Error('harness-failure: review base and head resolve to the same commit; nothing to review');
+// The range is the review base against the head; when the merge base is the head itself there is nothing to review.
+function gitReviewSnapshot(repoRoot, baseCommit, headCommit) {
+  const leftSha = sh('git', ['merge-base', baseCommit, headCommit], { cwd: repoRoot }).trim();
+  if (leftSha === headCommit) throw new Error('harness-failure: review base and head resolve to the same commit; nothing to review');
   const reviewText = sh('git', ['diff', leftSha, headCommit, '--'], { cwd: repoRoot });
   const raw = sh('git', ['diff', '--name-only', '-z', '--no-renames', leftSha, headCommit, '--'], { cwd: repoRoot, encoding: null });
   const paths = parseNulPaths(raw, 'Git changed-path inventory');
@@ -56,16 +55,8 @@ function gitHeadSha(repoRoot) {
   return sh('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).trim();
 }
 
-// A caller may hold its own lock inside the repository. Ignore only untracked
-// files in that exact lock directory, never tracked changes or other state.
-function gitDirty(repoRoot, reviewLock = null) {
-  const relative = reviewLock && path.relative(path.resolve(repoRoot), path.resolve(reviewLock));
-  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    return sh('git', ['status', '--porcelain'], { cwd: repoRoot }).trim().length > 0;
-  }
-  const prefix = `${relative.split(path.sep).join('/')}/`;
-  const status = sh('git', ['status', '--porcelain', '--untracked-files=all', '-z'], { cwd: repoRoot });
-  return status.split('\0').filter(Boolean).some((entry) => !entry.startsWith('?? ') || !entry.slice(3).startsWith(prefix));
+function gitDirty(repoRoot) {
+  return sh('git', ['status', '--porcelain'], { cwd: repoRoot }).trim().length > 0;
 }
 
 // Review-only runs prove the reviewer left the tracked checkout alone without
@@ -154,4 +145,4 @@ function changedTrackedPath(before, after) {
   return null;
 }
 
-module.exports = { gitReviewSnapshot, gitHeadSha, gitDirty, trackedCheckoutInventory, changedTrackedPath };
+module.exports = { gitReviewSnapshot, gitHeadSha, gitDirty, trackedCheckoutInventory, changedTrackedPath, pathLeavesRoot };

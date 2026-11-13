@@ -39,7 +39,7 @@ function scripted(script, { before } = {}) {
   const calls = [];
   const counts = {};
   const spawn = async (input) => {
-    calls.push({ role: input.role, prompt: input.prompt, provider: input.provider, untrustedCheckout: input.untrustedCheckout, model: input.requestedModel, effort: input.reasoningEffort, env: input.env });
+    calls.push({ role: input.role, prompt: input.prompt, provider: input.provider, model: input.requestedModel, effort: input.reasoningEffort, env: input.env });
     const n = counts[input.role] = (counts[input.role] || 0) + 1;
     const scriptedFor = script[input.role];
     const answer = Array.isArray(scriptedFor) ? scriptedFor[Math.min(n, scriptedFor.length) - 1] : scriptedFor;
@@ -73,7 +73,7 @@ test('a clean broad round with an intent file runs intent, correctness, gate and
   assert.equal(r.error, undefined);
   assert.deepEqual(r.roles, ['intent', 'correctness', 'gate', 'gate-verify']);
   assert.deepEqual(r.result, EMPTY);
-  assert.ok(r.calls.every((c) => c.provider === 'claude' && c.untrustedCheckout === true));
+  assert.ok(r.calls.every((c) => c.provider === 'claude'));
 });
 
 test('a delta round asks correctness and verify only, and the model, effort and prior findings reach the prompts', async () => {

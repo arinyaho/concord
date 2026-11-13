@@ -37,7 +37,7 @@ test('unexaminedPaths resolves every changed path with one git call and keeps it
   process.env.PATH = `${bin}${path.delimiter}${pathBefore}`;
   try {
     // b.txt shares a blob with the examined a.txt; c.txt differs; gone.txt is absent at head.
-    const missing = fold.unexaminedPaths(repo, { target: { head_sha: head } }, ['a.txt', 'b.txt', 'c.txt', 'gone.txt'], ['a.txt']);
+    const missing = fold.unexaminedPaths(repo, head, ['a.txt', 'b.txt', 'c.txt', 'gone.txt'], ['a.txt']);
     assert.deepStrictEqual(missing, ['c.txt', 'gone.txt']);
   } finally { process.env.PATH = pathBefore; }
   assert.strictEqual(fs.readFileSync(log, 'utf8').trim().split('\n').length, 1);
@@ -56,20 +56,19 @@ test('unexaminedPaths: the old path of a rename is covered by the new path; a mo
   git('rm', '-q', 'del.txt');
   git('add', '-A'); git('commit', '-qm', 'change');
   const head = git('rev-parse', 'HEAD');
-  const ledger = { target: { base_sha: base, head_sha: head } };
   const changed = ['del.txt', 'mod.txt', 'new.txt', 'old.txt'];
-  assert.deepStrictEqual(fold.unexaminedPaths(repo, ledger, changed, ['new.txt'], base), ['del.txt', 'mod.txt']);
-  assert.deepStrictEqual(fold.unexaminedPaths(repo, ledger, changed, ['mod.txt', 'del.txt'], base), ['new.txt', 'old.txt']);
+  assert.deepStrictEqual(fold.unexaminedPaths(repo, head, changed, ['new.txt'], base), ['del.txt', 'mod.txt']);
+  assert.deepStrictEqual(fold.unexaminedPaths(repo, head, changed, ['mod.txt', 'del.txt'], base), ['new.txt', 'old.txt']);
   // A base after the rename puts the rename outside the range: the old path is not covered.
   fs.writeFileSync(path.join(repo, 'later.txt'), 'later\n');
   git('add', '-A'); git('commit', '-qm', 'later');
   const later = git('rev-parse', 'HEAD');
-  assert.deepStrictEqual(fold.unexaminedPaths(repo, { target: { head_sha: later } }, changed, ['new.txt'], head), ['del.txt', 'mod.txt', 'old.txt']);
+  assert.deepStrictEqual(fold.unexaminedPaths(repo, later, changed, ['new.txt'], head), ['del.txt', 'mod.txt', 'old.txt']);
   // No base: rename detection is skipped.
-  assert.deepStrictEqual(fold.unexaminedPaths(repo, ledger, changed, ['new.txt']), ['del.txt', 'mod.txt', 'old.txt']);
+  assert.deepStrictEqual(fold.unexaminedPaths(repo, head, changed, ['new.txt']), ['del.txt', 'mod.txt', 'old.txt']);
 });
 
-test('foldGateFindings: drops verify-rejected and dismissed, keeps unchanged-file findings', () => {
+test('foldGateFindings: drops verify-rejected findings, keeps unchanged-file findings', () => {
   const gateFindings = [
     { id: 'gate:silent-gap:sibling-reopen', file: 'src/unchanged_sibling.js', span: 'spawn(opts)', summary: 'sibling reopens the gate', requirement: 'must not reopen a resolved sibling' },
     { id: 'gate:ac-coverage:missing-validate', file: 'src/verify.js', span: '', summary: 'design requires a target-exists check', requirement: 'verify must check the target exists' },
@@ -77,8 +76,7 @@ test('foldGateFindings: drops verify-rejected and dismissed, keeps unchanged-fil
   ];
   const out = fold.foldGateFindings({
     gateFindings,
-    verifyRejectedIds: ['gate:cross-context:ac-b-partial'],   // a false positive
-    dismissedIds: ['gate:ac-coverage:missing-validate'],      // human-accepted/deferred
+    verifyRejectedIds: ['gate:cross-context:ac-b-partial', 'gate:ac-coverage:missing-validate'],
   });
   assert.strictEqual(out.length, 1);
   assert.strictEqual(out[0].id, 'gate:silent-gap:sibling-reopen');
@@ -93,7 +91,6 @@ test('foldGateFindings: class derives from the id segment, defaults to cross-con
   const out = fold.foldGateFindings({
     gateFindings: [{ id: 'gate:only-two-segments', file: 'a.js', span: '', summary: 's', requirement: '' }],
     verifyRejectedIds: [],
-    dismissedIds: [],
   });
   assert.strictEqual(out[0].class, 'cross-context');
 });

@@ -3,18 +3,16 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { reviewerPrompt } = require('../scripts/runner/round-plan');
-const { normalizeArtifact, retryPrompt } = require('../scripts/runner/artifact-contract');
+const { normalizeArtifact } = require('../scripts/runner/artifact-contract');
 
 const h = (s) => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
-const ctx = { stateDir: '/s', round: 2, targetType: 'git', dodDeferred: true, slug: 'x', classify: true, priorFindings: [{ id: 'correctness:a', file: 'a.js', summary: 's' }] };
+const ctx = { stateDir: '/s', round: 2, slug: 'x', priorFindings: [{ id: 'correctness:a', file: 'a.js', summary: 's' }] };
 const verify = (extra) => JSON.stringify({ status: 'ok', rejected: [], findings: [], ...extra });
 const entry = { id: 'correctness:a', evidence: { file: 'a.js', span: 'guard()', reason: 'a guard precedes the call' } };
 
-// Hashes taken before the addressed verdict existed: the verdict is opt-in. The gate hash tracks the later bounded reference-sweep prompt correction.
-test('with no addressable finding every reviewer prompt, retry prompt and normalized verify artifact is byte-identical to before', () => {
+// Hashes taken before the addressed verdict existed. The gate hash tracks the later bounded reference-sweep prompt correction.
+test('with no addressable finding every reviewer prompt is byte-identical to before', () => {
   assert.deepEqual(['correctness', 'verify', 'gate', 'gate-verify'].map((r) => h(reviewerPrompt(r, ctx))), ['a184471fd5d2b484', '7f271d313893e887', 'f43d01865a162744', 'b8fc61054db3812e']);
-  assert.deepEqual(['correctness', 'verify'].map((r) => h(retryPrompt(r))), ['758fc4f36b34f1aa', '89c2129a4a503d94']);
-  assert.equal(h(JSON.stringify(normalizeArtifact('verify', verify({ addressed: [entry] })))), 'e72e3f4e87a1b9c1');
   assert.equal(reviewerPrompt('verify', { ...ctx, addressable: [] }), reviewerPrompt('verify', ctx));
 });
 
@@ -26,14 +24,14 @@ test('the verify prompt lists addressable findings as one JSON array that the au
   assert.ok(!reviewerPrompt('correctness', { ...ctx, addressable: [{ id: 'correctness:a', authorReply: 'hello' }] }).includes('hello'), 'only verify sees the reply');
 });
 
-test('a verify artifact may carry addressed verdicts only when asked for, and each needs an id, a file, a span and a reason', () => {
-  const ok = normalizeArtifact('verify', verify({ addressed: [entry] }), { addressed: true });
+test('a verify artifact may carry addressed verdicts, and each needs an id, a file, a span and a reason', () => {
+  const ok = normalizeArtifact('verify', verify({ addressed: [entry] }));
   assert.deepEqual(ok.addressed, [entry]);
   for (const bad of [{ ...entry, evidence: { ...entry.evidence, reason: ' ' } }, { ...entry, evidence: { ...entry.evidence, span: '' } }, { ...entry, evidence: { file: 'a.js', span: 'x' } }, { id: 'other:x', evidence: entry.evidence }, { id: entry.id }]) {
-    assert.throws(() => normalizeArtifact('verify', verify({ addressed: [bad] }), { addressed: true }), /addressed\[0\]/);
+    assert.throws(() => normalizeArtifact('verify', verify({ addressed: [bad] })), /addressed\[0\]/);
   }
-  assert.throws(() => normalizeArtifact('verify', verify({ addressed: [{ ...entry, evidence: { ...entry.evidence, reason: 'x'.repeat(501) } }] }), { addressed: true }), /addressed\[0\]/);
-  assert.equal('addressed' in normalizeArtifact('verify', verify(), { addressed: true }), false);
+  assert.throws(() => normalizeArtifact('verify', verify({ addressed: [{ ...entry, evidence: { ...entry.evidence, reason: 'x'.repeat(501) } }] })), /addressed\[0\]/);
+  assert.equal('addressed' in normalizeArtifact('verify', verify()), false);
 });
 
 test('an author reply that names the artifact destination cannot hide the real one from the prompt (#395)', () => {
@@ -46,9 +44,9 @@ test('an author reply that names the artifact destination cannot hide the real o
 
 test('a verdict may name a gate or intent finding, while the verify findings prefixes stay those of a correctness review (#423)', () => {
   const { allowedFindingPrefixes } = require('../scripts/runner/artifact-contract');
-  for (const id of ['gate:x', 'intent:x']) assert.deepEqual(normalizeArtifact('verify', verify({ addressed: [{ ...entry, id }] }), { addressed: true }).addressed[0].id, id);
+  for (const id of ['gate:x', 'intent:x']) assert.deepEqual(normalizeArtifact('verify', verify({ addressed: [{ ...entry, id }] })).addressed[0].id, id);
   assert.deepEqual(allowedFindingPrefixes('verify'), ['correctness:', 'docreview:']);
-  assert.throws(() => normalizeArtifact('verify', verify({ findings: [{ id: 'gate:x', file: 'a', span: 's', summary: 's', requirement: 'r', category: 'c' }] }), { addressed: true }));
+  assert.throws(() => normalizeArtifact('verify', verify({ findings: [{ id: 'gate:x', file: 'a', span: 's', summary: 's', requirement: 'r', category: 'c' }] })));
 });
 
 const description = '# T\n\nIt calls src/db.js first.';

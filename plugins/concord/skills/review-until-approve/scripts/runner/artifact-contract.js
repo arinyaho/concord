@@ -1,12 +1,10 @@
 'use strict';
 
 const { isValidFindingId, normalizeFindingId } = require('./gate-contract');
-const { safeIdForFilename } = require('./artifact-name');
 
 const SHAPES = {
   correctness: { arrays: ['examined', 'findings'], prefixes: ['correctness:', 'docreview:'] },
   verify: { arrays: ['rejected', 'findings'], prefixes: ['correctness:', 'docreview:'] }, // findings: distrust-green, same as gate-verify
-  plan: { arrays: ['groups'], prefixes: ['correctness:', 'docreview:'] },
   intent: { arrays: ['findings'], prefixes: ['intent:'] },
   gate: { arrays: ['findings'], prefixes: ['gate:'] },
   'gate-verify': { arrays: ['rejected', 'findings'], prefixes: ['gate:'] },
@@ -25,48 +23,27 @@ function allowedFindingPrefixes(name) {
   return [...shape.prefixes];
 }
 
-function retryPrompt(name) {
-  const shape = SHAPES[name];
-  const fields = shape.arrays.map((key) => `"${key}":[]`).join(',');
-  const prefixes = allowedFindingPrefixes(name).join(' or ');
-  const rejectedRule = shape.arrays.includes('rejected')
-    ? ` Each "rejected" entry is an object {"id":"<finding id>","reason":"<one line naming what you actually ran, measured, or read to reject it>"} -- a bare id string is not accepted.`
-    : '';
-  const unverifiableRule = name === 'verify' || name === 'gate-verify'
-    ? ' An optional "unverifiable" array holds {"id":"<candidate id>","reason":"<the probe you ran and the environment property that decided its result>"} entries for candidates whose probe result depends on your sandbox rather than the code; keep it, and never list an id both there and in "rejected".'
-    : '';
-  const groupsRule = name === 'plan' ? ' A v2 plan must classify every surviving finding into exactly one group; never invent an implicit singleton.' : name === 'verify' ? ' The optional "groups" array is legacy evidence only and cannot authorize edits.' : '';
-  const ownershipRule = name === 'gate-verify'
-    ? ` This artifact role is gate-verify. The only allowed finding ID prefix is ${prefixes}. ${allowedFindingPrefixes('verify').map((prefix) => `${prefix}*`).join(' and ')} candidates are context only and must not be dispositioned in this artifact; their disposition belongs to the correctness verifier. The optional "blocking" array holds {"id":"<gate id>","reason":"<one line>"} entries for gate candidates you judge release-blocking despite a follow-up claim. The optional "duplicates" array holds {"id":"<gate id>","of":"<correctness id>"} entries for gate candidates that restate a correctness candidate. Rewrite only the gate candidates' verdict, preserve the original evidence, and do not delete evidence merely to manufacture a clean verdict.`
-    : '';
-  return `Rewrite only round artifact ${name} as JSON: {"status":"ok",${name === 'plan' ? '"protocolVersion":2,' : ''}${fields}}. Findings require id, file, and summary; ids must use ${prefixes}<stable-slug>.${rejectedRule}${unverifiableRule}${groupsRule}${ownershipRule} Do not add prose or other extra top-level fields, with one exception: if you could not run the method you were assigned, keep (or add) "blocked":["<tool>: <what failed>"] -- never drop it to make this artifact validate.`;
-}
-
 // verify and gate-verify may list a kept candidate in a verdict shape; such an
 // entry has no evidence of its own, so a repair may delete it (and only it).
 const dropsInvalidFindings = (name) => !!SHAPES[name] && SHAPES[name].arrays.includes('rejected');
 const lacksFindingFields = (item) => !!item && typeof item === 'object' && !Array.isArray(item) && ['id', 'file', 'summary'].some((field) => typeof item[field] !== 'string' || !item[field]);
 
-// An entry is foreign only when it names ids and none carries an allowed prefix;
-// a malformed entry (null, no id, no findingIds) is the reviewer's own and is left for normalization to reject.
+// An entry is foreign only when its id carries none of the role's prefixes;
+// a malformed entry (null, no id) is the reviewer's own and is left for normalization to reject.
 function isForeign(name, item) {
-  const ids = name === 'plan' && item && typeof item === 'object' ? item.findingIds : [typeof item === 'string' ? item : item && item.id];
-  return Array.isArray(ids) && ids.length > 0 && ids.every((id) => typeof id === 'string') && !ids.some((id) => SHAPES[name].prefixes.some((prefix) => id.startsWith(prefix)));
+  const id = typeof item === 'string' ? item : item && item.id;
+  return typeof id === 'string' && !SHAPES[name].prefixes.some((prefix) => id.startsWith(prefix));
 }
 // What a repair may delete from `key`: a foreign entry, or an evidence-less verdict-shape finding.
 const repairKeys = (name) => dropsInvalidFindings(name) ? [...SHAPES[name].arrays, 'unverifiable'] : SHAPES[name].arrays;
 const removable = (name, key, item) => isForeign(name, item) || (key === 'findings' && dropsInvalidFindings(name) && lacksFindingFields(item));
-// A plan group may carry a foreign id next to its own (a gate: id beside a correctness: id); a repair drops just that id and keeps the group.
-const ownedItem = (name, key, item) => name === 'plan' && key === 'groups' && item && Array.isArray(item.findingIds) && !isForeign(name, item)
-  ? { ...item, findingIds: item.findingIds.filter((id) => typeof id !== 'string' || SHAPES.plan.prefixes.some((prefix) => id.startsWith(prefix))) } : item;
-const ownedItems = (name, key, items) => items.filter((item) => !removable(name, key, item)).map((item) => ownedItem(name, key, item));
+const ownedItems = (name, key, items) => items.filter((item) => !removable(name, key, item));
 
 // Every place an artifact names a finding id: the callback maps each id string, so one pass both collects and rewrites.
 const mapIds = (value, fn) => {
   const one = (item) => typeof item === 'string' ? fn(item) : item && typeof item === 'object' && !Array.isArray(item) && typeof item.id === 'string' ? { ...item, id: fn(item.id) } : item;
   const out = { ...value };
   for (const key of ['findings', 'rejected', 'unverifiable', 'blocking', 'addressed']) if (Array.isArray(value[key])) out[key] = value[key].map(one);
-  if (Array.isArray(value.groups)) out.groups = value.groups.map((g) => g && Array.isArray(g.findingIds) ? { ...g, findingIds: g.findingIds.map((id) => typeof id === 'string' ? fn(id) : id) } : g);
   if (Array.isArray(value.duplicates)) out.duplicates = value.duplicates.map((d) => d && typeof d === 'object' ? { ...d, ...(typeof d.id === 'string' ? { id: fn(d.id) } : {}), ...(typeof d.of === 'string' ? { of: fn(d.of) } : {}) } : d);
   return out;
 };
@@ -162,7 +139,7 @@ function normalizeAddressed(name, list) {
   });
 }
 
-function normalizeArtifact(name, raw, { addressed = false } = {}) {
+function normalizeArtifact(name, raw) {
   const shape = SHAPES[name];
   if (!shape) throw new Error(`unknown artifact role: ${name}`);
   let parsed;
@@ -182,7 +159,7 @@ function normalizeArtifact(name, raw, { addressed = false } = {}) {
   if (parsed.blocked !== undefined) {
     if (!Array.isArray(parsed.blocked)) throw new ArtifactError('fatal', `${name} artifact field "blocked" must be an array`);
     if (parsed.blocked.length) {
-      throw new ArtifactError('fatal', `${name} reviewer could not run: ${parsed.blocked.map((b) => String(b)).join('; ')} -- it was blocked from the method it was assigned, so this round has no usable verdict. If a sandbox, permission, or tool failure blocked it, fix the environment and re-run; if the block was the reviewer's own probe (for example a raw equality check of a file-target artifact against its file), re-run the reviewer with a corrected method and leave the target, ledger, and prior review evidence unchanged. Do not accept the artifact.`);
+      throw new ArtifactError('fatal', `${name} reviewer could not run: ${parsed.blocked.map((b) => String(b)).join('; ')} -- it was blocked from the method it was assigned, so this round has no usable verdict. If a sandbox, permission, or tool failure blocked it, fix the environment and run the round again. Do not accept the artifact.`);
     }
   }
   if (!['ok', 'findings', 'clean'].includes(parsed.status)) throw new ArtifactError('retry', `${name} artifact has unsupported status`);
@@ -217,35 +194,6 @@ function normalizeArtifact(name, raw, { addressed = false } = {}) {
       return { id, reason: reason.trim() };
     });
   }
-  // File-review verification may independently confirm that an original
-  // document candidate is minor. This is evidence only; the caller binds it
-  // to the original finder candidate and current identity before using it.
-  if (name === 'verify' && parsed.minor !== undefined) {
-    if (!Array.isArray(parsed.minor)) throw new ArtifactError('fatal', `${name} artifact field "minor" must be an array`);
-    const seen = new Set();
-    canonical.minor = parsed.minor.map((entry, index) => {
-      const id = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry.id : undefined;
-      const reason = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry.reason : undefined;
-      if (typeof id !== 'string' || !isValidFindingId(id) || !id.startsWith('docreview:')) throw new ArtifactError('retry', `${name} minor[${index}] has invalid document finding id`);
-      if (seen.has(id)) throw new ArtifactError('retry', `${name} minor[${index}] duplicates id "${id}"`);
-      if (typeof reason !== 'string' || !reason.trim()) throw new ArtifactError('retry', `${name} minor[${index}] ("${id}") has no reason`);
-      seen.add(id);
-      return { id, reason: reason.trim() };
-    });
-  }
-  if (name === 'verify' && parsed.blocking !== undefined) {
-    if (!Array.isArray(parsed.blocking)) throw new ArtifactError('fatal', `${name} artifact field "blocking" must be an array`);
-    const seen = new Set();
-    canonical.blocking = parsed.blocking.map((entry, index) => {
-      const id = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry.id : undefined;
-      const reason = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry.reason : undefined;
-      if (typeof id !== 'string' || !isValidFindingId(id) || !id.startsWith('docreview:')) throw new ArtifactError('retry', `${name} blocking[${index}] has invalid document finding id`);
-      if (seen.has(id)) throw new ArtifactError('retry', `${name} blocking[${index}] duplicates id "${id}"`);
-      if (typeof reason !== 'string' || !reason.trim()) throw new ArtifactError('retry', `${name} blocking[${index}] ("${id}") has no reason`);
-      seen.add(id);
-      return { id, reason: reason.trim() };
-    });
-  }
   // A verifier whose probe ran but whose result is decided by the reviewer's
   // own environment (the Codex sandbox's user namespace shows unmapped host
   // owners as uid 65534) lists the candidate here instead of declaring
@@ -269,7 +217,7 @@ function normalizeArtifact(name, raw, { addressed = false } = {}) {
       }
     }
   }
-  if (addressed && name === 'verify' && parsed.addressed !== undefined) canonical.addressed = normalizeAddressed(name, parsed.addressed);
+  if (name === 'verify' && parsed.addressed !== undefined) canonical.addressed = normalizeAddressed(name, parsed.addressed);
   if (name === 'gate-verify' && parsed.blocking !== undefined) {
     if (!Array.isArray(parsed.blocking)) throw new ArtifactError('fatal', 'gate-verify artifact field "blocking" must be an array');
     canonical.blocking = parsed.blocking.map((entry, index) => {
@@ -303,71 +251,7 @@ function normalizeArtifact(name, raw, { addressed = false } = {}) {
       if (rejectedIds.has(entry.id)) throw new ArtifactError('retry', `gate-verify lists "${entry.id}" as both rejected and a duplicate; a duplicate is not a false positive`);
     }
   }
-  if (name === 'plan') {
-    if (parsed.protocolVersion !== 2) throw new ArtifactError('retry', 'plan artifact requires protocolVersion 2');
-    canonical.protocolVersion = 2;
-  }
-  if ((name === 'verify' || name === 'plan') && parsed.groups !== undefined) {
-    if (!Array.isArray(parsed.groups)) throw new ArtifactError('fatal', `${name} artifact field "groups" must be an array`);
-    canonical.groups = parsed.groups.map((group, index) => {
-      if (!group || typeof group !== 'object' || Array.isArray(group)) throw new ArtifactError('fatal', `${name} group[${index}] is not an object`);
-      // A repeat inside one group carries no information: keep the first occurrence.
-      const findingIds = Array.isArray(group.findingIds) ? [...new Set(group.findingIds)] : group.findingIds;
-      if (!Array.isArray(findingIds) || !findingIds.length
-        || findingIds.some((id) => !isValidFindingId(id) || !shape.prefixes.some((prefix) => id.startsWith(prefix)))) {
-        throw new ArtifactError('retry', `${name} group[${index}] has invalid findingIds`);
-      }
-      if (typeof group.rootCause !== 'string' || !group.rootCause.trim()) throw new ArtifactError('retry', `${name} group[${index}] is missing "rootCause"`);
-      if (!Array.isArray(group.invariants) || !group.invariants.length || group.invariants.some((item) => typeof item !== 'string' || !item.trim())) {
-        throw new ArtifactError('retry', `${name} group[${index}] must name at least one invariant`);
-      }
-      if (!['local', 'structural'].includes(group.changeClass)) throw new ArtifactError('retry', `${name} group[${index}] has invalid "changeClass"`);
-      if (!['fix', 'reconcile'].includes(group.action)) {
-        throw new ArtifactError('retry', `${name} group[${index}] has invalid "action": action must be "fix" or "reconcile"`);
-      }
-      if (group.action === 'reconcile' && (typeof group.reason !== 'string' || !group.reason.trim())) {
-        throw new ArtifactError('retry', `${name} group[${index}] must explain why human reconciliation is required`);
-      }
-      if (name === 'plan' && (typeof group.groupId !== 'string' || !/^[a-z0-9][a-z0-9:._-]*$/.test(group.groupId))) {
-        throw new ArtifactError('retry', `plan group[${index}] has invalid "groupId"`);
-      }
-      const structuralEffects = group.structuralEffects === undefined ? [] : group.structuralEffects;
-      if (!Array.isArray(structuralEffects) || structuralEffects.some((item) => !['identity', 'ownership', 'retry-accounting', 'ordering', 'idempotency', 'lease-fence', 'deadline-ttl'].includes(item))) {
-        throw new ArtifactError('retry', `${name} group[${index}] has invalid "structuralEffects"`);
-      }
-      if (name === 'plan' && group.changeClass === 'structural' && !structuralEffects.length) {
-        throw new ArtifactError('retry', `plan group[${index}] must name structuralEffects`);
-      }
-      let designEvidence;
-      if (name === 'plan' && group.changeClass === 'structural' && group.action === 'fix') {
-        const evidence = group.designEvidence;
-        if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)
-          || typeof evidence.source !== 'string' || !evidence.source.trim()
-          || typeof evidence.sourceHash !== 'string' || !evidence.sourceHash.trim()
-          || !Array.isArray(evidence.requirements) || !evidence.requirements.length || evidence.requirements.some((item) => typeof item !== 'string' || !item.trim())
-          || typeof evidence.uniqueness !== 'string' || !evidence.uniqueness.trim()) {
-          throw new ArtifactError('retry', `plan group[${index}] structural fix requires designEvidence`);
-        }
-        designEvidence = { source: evidence.source.trim(), sourceHash: evidence.sourceHash.trim(), requirements: evidence.requirements.map((item) => item.trim()), uniqueness: evidence.uniqueness.trim() };
-      }
-      return {
-        ...(name === 'plan' ? { groupId: group.groupId } : {}), findingIds: [...findingIds], rootCause: group.rootCause.trim(), invariants: group.invariants.map((item) => item.trim()),
-        changeClass: group.changeClass, ...(name === 'plan' || group.structuralEffects !== undefined ? { structuralEffects: [...structuralEffects] } : {}), action: group.action,
-        ...(designEvidence ? { designEvidence } : {}), ...(group.action === 'reconcile' ? { reason: group.reason.trim() } : {}),
-      };
-    });
-    // Each group's fix and certificate artifacts are named by safeIdForFilename(groupId),
-    // so two groups whose names coincide there would overwrite each other's artifacts.
-    if (name === 'plan') {
-      const owners = new Map();
-      canonical.groups.forEach((group, index) => {
-        const key = safeIdForFilename(group.groupId);
-        if (owners.has(key)) throw new ArtifactError('retry', `plan group[${owners.get(key)}] and group[${index}] share the artifact name of groupId "${group.groupId}"; every groupId must be unique after ":" and other filename-illegal characters become "_"`);
-        owners.set(key, index);
-      });
-    }
-  }
   return canonical;
 }
 
-module.exports = { ArtifactError, repairsSlugs, dropsInvalidFindings, normalizeArtifact, retryPrompt, repairCandidate, preservesArtifact, allowedFindingPrefixes, ADDRESSABLE_PREFIXES, ARTIFACT_ROLES: Object.keys(SHAPES) };
+module.exports = { ArtifactError, repairsSlugs, dropsInvalidFindings, normalizeArtifact, repairCandidate, preservesArtifact, allowedFindingPrefixes, ADDRESSABLE_PREFIXES };

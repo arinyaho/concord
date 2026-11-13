@@ -1,6 +1,6 @@
 'use strict';
 // Windows-only behavior: codexExec/providerExec route the (potentially
-// multi-line) reviewer/fixer prompt through stdin instead of argv, because
+// multi-line) reviewer prompt through stdin instead of argv, because
 // on win32 `crossPlatformOpts` sets `shell: true`, and cmd.exe's own
 // command-line reader treats an embedded newline as a command boundary
 // before the argument ever reaches the CommandLineToArgvW-level quoting
@@ -161,33 +161,30 @@ test('win32: codexExec swallows EPIPE on stdin instead of crashing the process',
 
 // claude keeps its unconditional `-p` flag (that flag alone means
 // "non-interactive"; omitting only the trailing positional prompt makes it
-// read stdin). copilot's docs say piped stdin is ignored whenever `-p`/
-// `--prompt` is present, so on win32 that flag must be dropped entirely,
-// not just its value.
-for (const [provider, expectDashP] of [['claude', true], ['copilot', false]]) {
-  test(`win32: providerExec (${provider}) sends the prompt via stdin, not argv`, async (t) => {
-    await withFakeOnPath(provider, async (resolvedPath) => {
-      const calls = [];
-      t.mock.method(childProcess, 'spawn', (bin, args, opts) => {
-        calls.push({ bin, args, opts });
-        const child = fakeChild();
-        queueMicrotask(() => {
-          child.stdout.emit('data', JSON.stringify({ ok: true }));
-          child.emit('close', 0);
-        });
-        return child;
+// read stdin).
+test('win32: providerExec (claude) sends the prompt via stdin, not argv', async (t) => {
+  const provider = 'claude';
+  await withFakeOnPath(provider, async (resolvedPath) => {
+    const calls = [];
+    t.mock.method(childProcess, 'spawn', (bin, args, opts) => {
+      calls.push({ bin, args, opts });
+      const child = fakeChild();
+      queueMicrotask(() => {
+        child.stdout.emit('data', JSON.stringify({ ok: true }));
+        child.emit('close', 0);
       });
-      const { providerExec } = loadRunnerWithPlatform('win32');
-      const multilinePrompt = 'first line\nsecond line: | dir';
-      await providerExec({ provider, role: 'correctness', prompt: multilinePrompt, repoRoot: '/tmp/fake-repo', stateDir: '/tmp/fake-state' });
-
-      assert.strictEqual(calls.length, 1);
-      const { args } = calls[0];
-      // crossPlatformArgs quotes/escapes every argument on win32 (^"-p^" for
-      // a bare "-p"), so check for the quoted form, not the raw literal.
-      assert.ok(!args.some((a) => a.includes('first line')), `the multi-line prompt must not appear anywhere in ${provider}'s argv on win32`);
-      assert.strictEqual(args.includes('^"-p^"'), expectDashP, `${provider}'s -p flag presence on win32 should be ${expectDashP}`);
-      assert.strictEqual(calls[0].bin, resolvedPath, `${provider} must be spawned by its resolved absolute PATH entry, not the bare name`);
+      return child;
     });
+    const { providerExec } = loadRunnerWithPlatform('win32');
+    const multilinePrompt = 'first line\nsecond line: | dir';
+    await providerExec({ provider, role: 'correctness', prompt: multilinePrompt, repoRoot: '/tmp/fake-repo', stateDir: '/tmp/fake-state' });
+
+    assert.strictEqual(calls.length, 1);
+    const { args } = calls[0];
+    // crossPlatformArgs quotes/escapes every argument on win32 (^"-p^" for
+    // a bare "-p"), so check for the quoted form, not the raw literal.
+    assert.ok(!args.some((a) => a.includes('first line')), 'the multi-line prompt must not appear anywhere in claude\'s argv on win32');
+    assert.ok(args.includes('^"-p^"'), 'claude keeps its -p flag on win32');
+    assert.strictEqual(calls[0].bin, resolvedPath, 'claude must be spawned by its resolved absolute PATH entry, not the bare name');
   });
-}
+});

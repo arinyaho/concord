@@ -39,3 +39,15 @@ test('a lock held by a running process is not stale and is not reclaimed', () =>
   assert.strictEqual(reclaimStaleLock(lock), false);
   assert.strictEqual(fs.existsSync(lock), true);
 });
+
+test('a lock that never recorded an owner is kept while fresh and reclaimed once old', () => {
+  const fresh = path.join(tempDir('run-lock-'), 'run.lock');
+  fs.mkdirSync(fresh);
+  assert.strictEqual(reclaimStaleLock(fresh), false);
+  assert.strictEqual(fs.existsSync(fresh), true);
+  const aged = path.join(tempDir('run-lock-'), 'run.lock');
+  fs.mkdirSync(aged);
+  const old = new Date(Date.now() - 120000); fs.utimesSync(aged, old, old);
+  assert.strictEqual(reclaimStaleLock(aged), true);
+  assert.strictEqual(fs.existsSync(aged), false);
+});

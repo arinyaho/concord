@@ -2,9 +2,9 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { providerFailure, normalizeProviderFailure, reviewContinuation } = require('../scripts/runner/provider-failure');
+const { providerFailure, normalizeProviderFailure } = require('../scripts/runner/provider-failure');
 
-const input = { role: 'plan', provider: 'claude' };
+const input = { role: 'verify', provider: 'claude' };
 const secret = 'opaque-credential-216-DO-NOT-PERSIST';
 function safe(value) {
   const encoded = JSON.stringify(value);
@@ -19,7 +19,7 @@ test('nonzero provider failure retains actionable classification without arbitra
     stdout: JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: `Bearer ${secret}\n\u001b[31m` } }),
     stderr: `Authentication failed: invalid API key ${secret}\n\u001b[31m`,
   }));
-  assert.equal(failure.role, 'plan');
+  assert.equal(failure.role, 'verify');
   assert.equal(failure.kind, 'subprocess-exit');
   assert.equal(failure.exitCode, 1);
   assert.equal(failure.diagnostic.classification, 'authentication');
@@ -112,15 +112,14 @@ test('structured stdout errors must match the selected provider schema', () => {
   for (const [provider, record] of [
     ['claude', { type: 'turn.failed', error: { message: 'rate_limit_error' } }],
     ['codex', { type: 'result', is_error: true, errors: ['rate_limit_error'] }],
-    ['copilot', { type: 'turn.failed', error: { message: 'rate_limit_error' } }],
   ]) {
-    const failure = providerFailure({ role: 'plan', provider }, { status: 1, stdout: JSON.stringify(record), stderr: '' });
+    const failure = providerFailure({ role: 'verify', provider }, { status: 1, stdout: JSON.stringify(record), stderr: '' });
     assert.equal(failure.retryable, false, `${provider} must reject another provider's error envelope`);
   }
 });
 
 test('unrelated fields in a typed error envelope cannot authorize retry', () => {
-  const failure = providerFailure({ role: 'plan', provider: 'codex' }, {
+  const failure = providerFailure({ role: 'verify', provider: 'codex' }, {
     status: 1, stdout: JSON.stringify({ type: 'error', message: 'Executable is unavailable', documentation: { example: 'rate_limit_error' } }), stderr: '',
   });
   assert.equal(failure.diagnostic.classification, 'unknown');
@@ -132,7 +131,7 @@ test('supported structured Codex errors preserve actionable diagnostic fields', 
     { type: 'error', message: 'rate limit exceeded' },
     { type: 'turn.failed', error: { message: 'service unavailable' } },
   ]) {
-    const failure = safe(providerFailure({ role: 'plan', provider: 'codex' }, { status: 1, stdout: JSON.stringify(record), stderr: '' }));
+    const failure = safe(providerFailure({ role: 'verify', provider: 'codex' }, { status: 1, stdout: JSON.stringify(record), stderr: '' }));
     assert.equal(failure.retryable, true);
     assert.equal(failure.diagnostic.engine, 'codex');
   }
@@ -186,14 +185,14 @@ test('invalid process signal and exit status never escape the diagnostic boundar
 
 test('nonfinite and unsafe exit statuses are omitted from normalized provider failures', () => {
   for (const exitCode of [Infinity, NaN, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
-    const failure = normalizeProviderFailure({ role: 'plan', kind: 'subprocess-exit', exitCode, diagnostic: { engine: 'claude', classification: 'unknown' } });
+    const failure = normalizeProviderFailure({ role: 'verify', kind: 'subprocess-exit', exitCode, diagnostic: { engine: 'claude', classification: 'unknown' } });
     assert.equal(Object.hasOwn(failure, 'exitCode'), false);
   }
 });
 
 test('prototype property names are not valid provider identities or classification enums', () => {
   for (const inherited of ['__proto__', 'constructor', 'toString']) {
-    const failure = normalizeProviderFailure({ role: 'plan', kind: 'subprocess-exit', diagnostic: { engine: inherited, classification: inherited } });
+    const failure = normalizeProviderFailure({ role: 'verify', kind: 'subprocess-exit', diagnostic: { engine: inherited, classification: inherited } });
     assert.equal(failure.diagnostic.classification, 'unknown');
     assert.equal(failure.diagnostic.engine, 'unknown');
     assert.equal(failure.diagnostic.provider, 'unknown');
@@ -204,7 +203,7 @@ test('prototype property names are not valid provider identities or classificati
 
 test('direct failure normalization replaces untrusted diagnostic strings using the known engine table', () => {
   const failure = safe(normalizeProviderFailure({
-    role: 'plan', kind: 'subprocess-exit', exitCode: 1,
+    role: 'verify', kind: 'subprocess-exit', exitCode: 1,
     message: secret, retryable: true, signal: secret,
     diagnostic: { classification: 'authentication', message: `${secret}\u001b[31m`, engine: 'claude', provider: secret, providerSchema: secret },
   }));
@@ -218,30 +217,10 @@ test('direct failure normalization replaces untrusted diagnostic strings using t
 
 test('invalid direct diagnostic enum and engine cannot inject metadata or authorize retry', () => {
   const failure = safe(normalizeProviderFailure({
-    role: 'plan', kind: 'subprocess-exit', message: secret, retryable: true, exitCode: secret,
+    role: 'verify', kind: 'subprocess-exit', message: secret, retryable: true, exitCode: secret,
     diagnostic: { classification: secret, message: secret, engine: secret, provider: secret, providerSchema: secret },
   }));
   assert.equal(failure.diagnostic.classification, 'unknown');
   assert.equal(failure.retryable, false);
   assert.equal(Number.isInteger(failure.exitCode), false);
-});
-
-test('exhausted legacy semantic planner allowance offers terminal handoff', () => {
-  const continuation = reviewContinuation({ execution: { completed: ['correctness', 'verify'], planRetry: { state: 'exhausted', launched: true } } });
-  assert.equal(continuation.nextAction, 'terminal-handoff');
-});
-
-test('pending transport retry remains actionable without reopening semantic allowance', () => {
-  const continuation = reviewContinuation({ execution: { completed: ['correctness', 'verify'], planRetry: { state: 'pending', launched: true }, planTransportRetry: { state: 'pending', attempts: 0 } } });
-  assert.equal(continuation.nextAction, 'resume');
-});
-
-test('forged pending transport retry cannot reopen an exhausted semantic allowance', () => {
-  const continuation = reviewContinuation({ execution: { completed: ['correctness', 'verify'], planRetry: { state: 'exhausted', launched: true }, planTransportRetry: { state: 'pending', attempts: 0 } } });
-  assert.equal(continuation.nextAction, 'terminal-handoff');
-});
-
-test('dispatched transport retry without usable plan evidence offers terminal handoff', () => {
-  const continuation = reviewContinuation({ execution: { completed: ['correctness', 'verify'], planRetry: { state: 'exhausted', launched: true }, planTransportRetry: { state: 'dispatched', launched: true } } });
-  assert.equal(continuation.nextAction, 'terminal-handoff');
 });
