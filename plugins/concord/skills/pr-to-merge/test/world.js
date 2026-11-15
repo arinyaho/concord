@@ -159,8 +159,11 @@ function world(repos, extra = {}) {
         encoding: 'utf8', timeout, env: { ...process.env, PATH: `${path.join(dir, 'bin')}${path.delimiter}${process.env.PATH}` },
       });
       const made = calls().slice(before);
+      // The last line names the command to run again; `lines` holds the event lines before it.
+      const lines = r.stdout.split('\n').filter(Boolean);
+      const exited = /^exited /.test(lines[lines.length - 1] || '') ? lines.pop() : undefined;
       return {
-        lines: r.stdout.split('\n').filter(Boolean), stdout: r.stdout, stderr: r.stderr, code: r.status, calls: made,
+        lines, exited, stdout: r.stdout, stderr: r.stderr, code: r.status, calls: made,
         writes: made.filter((c) => c.includes('-X') || (c[0] === 'pr' && c[1] === 'merge')),
       };
     },

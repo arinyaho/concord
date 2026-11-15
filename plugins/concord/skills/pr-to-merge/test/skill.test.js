@@ -113,3 +113,15 @@ test('the wrapper acts on lines once, keeps running the script through a quiet n
   assert.ok(transient.starts >= 2);
   assert.equal(transient.sessions.length, 1, 'the run after the failed one merged and reported');
 });
+
+test('SKILL.md has the session start the command of the `exited` line after every run, and offers only the user\'s two ways on for a stale approval', () => {
+  assert.match(script, /`exited \$\{/);
+  const row = (start) => skill.split('\n').find((l) => l.startsWith(`| \`${start}`)) || '';
+  assert.match(row('exited …'), /start the command that follows `exited` again/);
+  assert.match(skill, /Its last line is `exited <command>`.*Do this after every run, also when it printed only lines you have already handled/);
+  assert.match(skill, /usage error \([^)]*\), and prints no `exited` line/);
+  const stale = row('triage …: approved on an older head only …');
+  assert.match(stale, /the user asks the approver to approve the current head again, or the user merges it by hand/);
+  assert.match(stale, /Never merge, approve, or ask the approver yourself/);
+  assert.match(wrapper, /grep -v -e '\^approved ' -e '\^rerun ' -e '\^synced ' -e '\^exited '/);
+});

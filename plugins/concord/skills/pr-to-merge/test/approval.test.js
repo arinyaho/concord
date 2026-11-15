@@ -36,7 +36,7 @@ test('an approval by --self never counts, alone or on an ordinary pull request',
   assert.deepEqual(r.lines, []);
   assert.deepEqual(r.writes, []);
   const both = world(repo(pr(1, { reviews: [approve('octocat', 'head1'), approve('monalisa', 'older')] }))).run(['acme/app']);
-  assert.deepEqual(both.lines, ['triage acme/app#1 head head1: approved on an older head only'], 'only the other approval is judged');
+  assert.deepEqual(both.lines, ['triage acme/app#1 head head1: approved on an older head only: by monalisa at older, commits after it not read'], 'only the other approval is judged');
 });
 
 test('a lost approval, for example to a dismissal, is simply not approved and prints nothing', () => {
@@ -92,7 +92,7 @@ test('reviews on a later page are read', () => {
 
 test('a review with no commit covers nothing and does not stop the scan', () => {
   const r = world(repo(pr(1, { reviews: [approve('monalisa', null)] }))).run(['acme/app']);
-  assert.deepEqual(r.lines, ['triage acme/app#1 head head1: approved on an older head only']);
+  assert.deepEqual(r.lines, ['triage acme/app#1 head head1: approved on an older head only: by monalisa at no commit, commits after it not read']);
   assert.equal(r.stderr, '');
 });
 
@@ -102,7 +102,8 @@ function run(build, { commits = {} } = {}) {
   const w = world({ 'acme/app': { prs: [pr(5, { headRefName: 'pr', headRefOid: g.head, reviews: [approve('monalisa', g.approved)] })], commits: typeof commits === 'function' ? commits(g) : commits } });
   return { g, w, r: w.run(['--checkout', `acme/app=${g.checkout}`, 'acme/app']) };
 }
-const stale = (g) => [`triage acme/app#5 head ${g.head.slice(0, 8)}: approved on an older head only`];
+// The stale line for the approval at g.approved, with `n` commits after it that do not keep coverage.
+const stale = (g, n = 1) => [`triage acme/app#5 head ${g.head.slice(0, 8)}: approved on an older head only: by monalisa at ${g.approved.slice(0, 8)}, ${n} commit${n === 1 ? '' : 's'} after it not covered`];
 
 test('an approval on an older head followed only by clean merges of the base covers the head, with no API call', () => {
   const { g, r } = run(({ edit, sh }) => {
@@ -186,9 +187,49 @@ test('a clean merge counts only from the pull request\'s own base: the default b
   }
 });
 
-test('without --checkout only an approval on the current head covers it', () => {
-  const r = world(repo(pr(1, { reviews: [approve('monalisa', 'older')] }))).run(['acme/app']);
-  assert.deepEqual(r.lines, ['triage acme/app#1 head head1: approved on an older head only']);
+test('without --checkout only an approval on the current head covers it, and the stale line names the approval and says the later commits were not read', () => {
+  const r = world(repo(pr(1, { reviews: [approve('octo-dev', 'oldest', 5), approve('monalisa', 'older', 10)] }))).run(['acme/app']);
+  assert.deepEqual(r.lines, ['triage acme/app#1 head head1: approved on an older head only: by monalisa at older, commits after it not read']);
+});
+
+test('the stale line names the newest counting approval, its commit, and how many commits after it do not keep coverage', () => {
+  // Approved at A by monalisa (an earlier approval by octo-dev at c0), then two commits that are not merges.
+  const g = gitPr(5, ({ edit, sh }) => {
+    const first = sh('rev-parse', 'HEAD');
+    sh('checkout', '-q', '-b', 'pr');
+    const approved = edit('ONE\ntwo\nthree\n', 'A');
+    edit('ONE\nTWO\nthree\n', 'more work');
+    edit('ONE\nTWO\nTHREE\n', 'even more');
+    return { approved, first };
+  });
+  const w = world({ 'acme/app': { prs: [pr(5, { headRefName: 'pr', headRefOid: g.head, reviews: [approve('octo-dev', g.first, 5), approve('monalisa', g.approved, 10)] })] } });
+  const r = w.run(['--checkout', `acme/app=${g.checkout}`, 'acme/app']);
+  assert.deepEqual(r.lines, stale(g, 2));
+  assert.match(r.lines[0], /monalisa at [0-9a-f]{8}, 2 commits after it/);
+  assert.deepEqual(r.writes, []);
+});
+
+test('a clean merge of the base after the approval is not counted among the commits after it', () => {
+  const { g, r } = run(({ edit, sh }) => {
+    sh('checkout', '-q', '-b', 'pr');
+    const approved = edit('ONE\ntwo\nthree\n', 'A');
+    sh('checkout', '-q', 'main'); edit('one\ntwo\nTHREE\n', 'B');
+    sh('checkout', '-q', 'pr'); sh('merge', '-q', '--no-edit', 'main');
+    edit('ONE\nTWO\nTHREE\n', 'more work');
+    return { approved };
+  });
+  assert.deepEqual(r.lines, stale(g, 1));
+});
+
+test('an approval whose commit is not on the head\'s first-parent line is named as such', () => {
+  const { g, r } = run(({ edit, sh }) => {
+    sh('checkout', '-q', '-b', 'old');
+    const approved = edit('ONE\ntwo\nthree\n', 'A');
+    sh('checkout', '-q', 'main'); sh('checkout', '-q', '-b', 'pr');
+    edit('ONE\ntwo\nthree\nrewritten\n', 'A rewritten');
+    return { approved };
+  });
+  assert.deepEqual(r.lines, [`triage acme/app#5 head ${g.head.slice(0, 8)}: approved on an older head only: by monalisa at ${g.approved.slice(0, 8)}, not on the head's first-parent line`]);
 });
 
 test('a --checkout path that is not a clone is a usage error', () => {
