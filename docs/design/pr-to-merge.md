@@ -134,7 +134,7 @@ The script prints one line per event. Approved and automated pull requests get t
 | `triage <repo>#<n> …: held by …` | Later activity or the label holds the pull request: one or more of `thread` (a comment in a review thread), `comment`, `label` |
 | `triage <repo>#<n> …: changes requested` | A counting account's latest review requests changes |
 | `triage <repo>#<n> …: conflict` | The pull request conflicts with its base |
-| `triage <repo>#<n> …: approved on an older head only` | Commits after every approval include one that is neither kind of merge that keeps coverage, and the pull request is not automated |
+| `triage <repo>#<n> …: approved on an older head only: by <login> at <sha> …` | Commits after every approval include one that is neither kind of merge that keeps coverage, and the pull request is not automated. The line names the newest counting approval's account and commit, newest by the time it was submitted, then either the number of commits after it on the head's first-parent line that keep no coverage (`2 commits after it not covered`), `commits after it not read` without `--checkout`, or `not on the head's first-parent line` when that line does not reach the approved commit |
 | `triage <repo>#<n> …: a branch rule blocks the merge` | GitHub reports a branch rule blocking the merge |
 | `triage <repo>#<n> …: required check still red after one re-run` | The second run of the failed jobs also failed |
 | `triage <repo>#<n> …: required check failed and cannot be re-run` | A required check that is not a workflow job failed |
@@ -145,18 +145,21 @@ The script prints one line per event. Approved and automated pull requests get t
 | `stack <repo>#<n>: waits for #<m>` | The pull request qualifies, and the open pull request `#<m>`, from the same repository, is based on its branch |
 | `merge failed …`, `sync failed …` | GitHub refused. The line gives the HTTP status when there is one and otherwise the word `refused`; GitHub's message goes to a log file next to the notice record, which the skill does not read |
 | `closed <repo>#<n>` | A pull request given as `OWNER/REPO#N` was closed without merging |
+| `exited <command>` | The last line of every run that does not end in a usage error: the run's own command line, quoted for `sh` |
 
 A `review` line is printed once per item, and every other notice once per pull request and head, while the notice record holds it. A pull request whose approval was lost, for example to a dismissal, is simply not approved and prints nothing. A failed API call does not end the run: the script reports it on standard error and scans again after the interval.
 
-`approved`, `rerun`, and `synced` are informational. The script exits after a scan that printed any other line, so that the line is acted on before the next scan. Otherwise it exits when the deadline passes.
+`approved`, `rerun`, `synced`, and `exited` are informational. The script exits after a scan that printed any other line, so that the line is acted on before the next scan. Otherwise it exits when the deadline passes. Either way, and also when it cannot read the logged-in account at start-up, its last line is `exited` followed by the run's own command line; a usage error prints nothing on standard output. The line reports how the run was started; what to do with it is the skill's. It repeats the arguments only, which are logins, paths, patterns, a label, and repository names, all already in the command the caller ran: no option takes a secret, because `gh` reads its own credentials. Each argument outside a small safe character set is single-quoted for `sh`; PowerShell reads the line the same way unless an argument contains a single quote.
 
 ## The skill
 
-In a session, the skill starts the script as one background command, acts on what it prints when it exits, and starts it again; the session is free for other work meanwhile. In the scheduled form the wrapper runs the script, as described under Scheduling.
+In a session, the skill starts the script as one background command, acts on what it prints when it exits, and then starts the command of the `exited` line, after every run; the session is free for other work meanwhile. In the scheduled form the wrapper runs the script, as described under Scheduling.
 
 ### Relaying
 
-For every `queued`, `ready`, `triage`, `stack`, `merge failed`, `sync failed`, and `closed` line, the skill tells the user which pull request it is and what the line says, as one line with the pull request's link. It does not act on the pull request. The informational lines need no action.
+For every `queued`, `ready`, `triage`, `stack`, `merge failed`, `sync failed`, and `closed` line, the skill tells the user which pull request it is and what the line says, as one line with the pull request's link. It does not act on the pull request. The informational lines other than `exited` need no action.
+
+For `approved on an older head only`, the skill also offers the user the two ways on: ask the approver to approve the current head again, or merge by hand. It merges, approves, and asks nothing itself, whatever the user answers.
 
 ### Answering a review on the user's own pull request
 
@@ -186,7 +189,7 @@ The scheduled form runs on the machine that holds the repository clones and the 
 
 1. It deletes the notice record, once at the start of the night.
 2. It creates the directory of the notice record and runs the script. No model runs. The script exits with the usage status for a wrong option or a `--self` that is not the logged-in account, and with a different status when the logged-in account could not be read. On the usage status the wrapper stops and says so; on any other failure it waits and runs the script again, until its deadline.
-3. When the script prints a line other than an informational one, the wrapper starts one agent session with the skill and passes those lines to it as data. The session acts on them and exits. It never needs the script's options and never starts the script.
+3. When the script prints a line other than an informational one, the wrapper starts one agent session with the skill and passes those lines to it as data, without the informational lines; the `exited` line is one of them, so the session is not given the script's options. The session acts on the lines and exits. It never starts the script.
 4. The wrapper runs the script again, until its deadline. On a night with nothing to report or answer, no session starts.
 
 Deleting the notice record each night means that everything still pending is reported again, which is the nightly report. The record holds only notices already printed, so deleting it changes nothing else.
@@ -216,6 +219,10 @@ The session needs the `gh` login of `--self` with push access to each repository
 **An automated pull request is bounded by the paths it changes, at the head that was read.** The account that opened a pull request does not prove who pushed its commits; anyone who can push to the automation's branch can add to it. Requiring every changed file to match the paths the user names bounds what such a push can get approved, reading the head again ties the approval to the files that were checked, and withdrawing the approval keeps it from outliving the check. The accounts and paths come from the user, because a rules file in the repository is text the repository's writers control.
 
 **The session reads only what the script names.** On the user's own pull requests the skill reads the items of the `review` lines, which come from counting accounts and automation accounts. A comment from any other account never reaches it.
+
+**The last line repeats the command line.** The instruction to start the script again sits in the skill text the session read at the start, and a run that printed only lines the session had already handled reads like the end of the work. The `exited` line is an event like the others: it reports that the run ended and how it was started, so the skill's instruction for it meets the session at the moment the run exits, together with the exact command, which the session then does not have to reconstruct from a context that may have been compacted. It is informational, so the scheduled wrapper, which owns its own loop, starts no session for it and never hands the script's options to a session.
+
+**A stale approval is reported with what the user decides on.** When an approval does not cover the head, the user chooses between asking the approver again and merging by hand, and the choice depends on who approved which commit and how much came after it. The line carries those, so the session neither looks them up nor guesses them. It counts only the commits that keep no coverage, the ones no approver read.
 
 **Waiting is not done by the model.** Waiting for approvals and checks is most of the elapsed time from a ready pull request to its merge, and the script does it without a model; a model acts only when there is something to relay or answer. After a merge, the wait for each workflow run is a single blocking shell command, not a sequence of model turns.
 

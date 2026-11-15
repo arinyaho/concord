@@ -70,6 +70,11 @@ function parseArgs(argv) {
 
 const opts = parseArgs(process.argv.slice(2));
 
+// The last line of every run that is not a usage error: this run's own command line, quoted for sh (and for PowerShell
+// unless an argument holds a single quote). It repeats only the arguments; no option takes a secret (gh reads its own credentials).
+const quote = (a) => (/^[\w./:=-]+$/.test(a) ? a : `'${a.replace(/'/g, "'\\''")}'`);
+const EXITED = `exited ${[process.argv0, ...process.argv.slice(1)].map(quote).join(' ')}\n`;
+
 // ---- external commands ------------------------------------------------------------------------------------------
 
 // Commands run with argument arrays, never through a shell, from a neutral directory so `gh` never acts on a local clone.
@@ -103,6 +108,7 @@ try {
 } catch (e) {
   // Not a usage error: the read can fail for a moment, and a caller may run the script again.
   process.stderr.write(`pr-to-merge: cannot read the account gh is logged in as${httpStatus(e) ? ` (HTTP ${httpStatus(e)})` : ''}\n`);
+  fs.writeSync(1, EXITED); // synchronous: process.exit does not wait for a write to a pipe
   process.exit(1);
 }
 for (const [repo, dir] of opts.checkout) {
@@ -286,17 +292,37 @@ function coverage(pr) {
     const isMerge = Boolean(p2) && !more.length;
     return isMerge && (cleanBaseMerge(c, p1, p2) || madeByGitHubForSelf(c)); // the local check first, the API only when it fails
   };
-  return (sha) => {
+  const fetch = () => {
+    if (!fetched) git(dir, ['fetch', '-q', 'origin', `+refs/heads/${pr.baseRef}:refs/remotes/origin/${pr.baseRef}`, `refs/pull/${pr.number}/head`]);
+    fetched = true;
+  };
+  const covers = (sha) => {
     if (sha === pr.head) return true;
     if (!dir || !sha) return false;
     if (!memo.has(sha)) {
-      if (!fetched) git(dir, ['fetch', '-q', 'origin', `+refs/heads/${pr.baseRef}:refs/remotes/origin/${pr.baseRef}`, `refs/pull/${pr.number}/head`]);
-      fetched = true;
+      fetch();
       const after = commitsAfter(sha);
       memo.set(sha, Boolean(after) && after.every(allowed));
     }
     return memo.get(sha);
   };
+  // For the stale line: how many commits after `sha` do not keep coverage; null when the head's first-parent line
+  // does not reach `sha`. Needs the local clone.
+  const uncovered = (sha) => {
+    if (!sha) return null;
+    fetch();
+    const after = commitsAfter(sha);
+    return after && after.filter((c) => !allowed(c)).length;
+  };
+  return { covers, uncovered };
+}
+
+// What the stale line adds: the newest counting approval's account and commit, and the commits after it.
+function staleDetail(pr, approval, uncovered) {
+  const at = `by ${who(approval)} at ${short(approval.commit_id) || 'no commit'}`;
+  if (!opts.checkout.has(pr.repo.toLowerCase())) return `${at}, commits after it not read`;
+  const n = uncovered(approval.commit_id);
+  return n === null ? `${at}, not on the head's first-parent line` : `${at}, ${n} commit${n === 1 ? '' : 's'} after it not covered`;
 }
 
 // ---- review activity and holds --------------------------------------------------------------------------------------
@@ -389,8 +415,8 @@ function evaluate(pr) {
   const say = (kind, text) => notice(`${kind}:${tag(pr)}@${pr.head}`, `triage ${tag(pr)} head ${short(pr.head)}: ${text}`);
   const reviews = restPages(`repos/${pr.repo}/pulls/${pr.number}/reviews?per_page=100`);
   const { approvals, changesRequested } = approvalOf(pr, reviews);
-  const covered = coverage(pr);
-  const covering = approvals.filter((a) => covered(a.commit_id));
+  const { covers, uncovered } = coverage(pr);
+  const covering = approvals.filter((a) => covers(a.commit_id));
   // The automated route applies whenever no counting approval covers the head; --self's approvals never count.
   // The script's own approvals (it posts no body) on a pull request from an automation account.
   const ownApprovals = automatedAccount(pr) ? reviews.filter((r) => r.state === 'APPROVED' && self(r.user) && !hasBody(r)) : [];
@@ -415,7 +441,8 @@ function evaluate(pr) {
     }
   }
   if (!covering.length && !automated) {
-    if (approvals.length) say('stale', 'approved on an older head only');
+    // The count is read only for a line not yet printed for this head.
+    if (approvals.length && !seen.has(`stale:${tag(pr)}@${pr.head}`)) say('stale', `approved on an older head only: ${staleDetail(pr, approvals[approvals.length - 1], uncovered)}`);
     return e;
   }
   if (changesRequested) say('changes', 'changes requested');
@@ -540,9 +567,10 @@ function scanRepo(target) {
     }
     saveState();
     // `approved`, `rerun` and `synced` are informational; any other line ends the run so that it is acted on.
-    if (printed.some((l) => !/^(approved|rerun|synced) /.test(l))) return;
+    if (printed.some((l) => !/^(approved|rerun|synced) /.test(l))) break;
     const remaining = deadline - Date.now();
-    if (remaining <= 0) return;
+    if (remaining <= 0) break;
     await sleepMs(Math.min(opts.interval * 1000, remaining));
   }
+  process.stdout.write(EXITED);
 })();

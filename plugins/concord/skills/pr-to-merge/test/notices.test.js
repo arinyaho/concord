@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { world, pr, review, approve, comment, threadComment } = require('./world');
+const { world, pr, review, approve, comment, threadComment, SCRIPT } = require('./world');
 
 const repo = (prs) => ({ 'acme/app': { prs } });
 const merged = (n) => `merged acme/app#${n} into main (squash) head head${n}; not passed: 0; unresolved threads: 0`;
@@ -34,7 +34,7 @@ test('review activity on a PR the user authored is printed once per item, from c
     'review acme/app#1 head head1: comment by ci-bot[bot] https://github.com/acme/app/pull/1#issuecomment-3',
     `review acme/app#2 head head2: review approved by monalisa ${approvedOwn.reviews[0].html_url}`,
     'review acme/app#2 head head2: comment by monalisa https://github.com/acme/app/pull/2#issuecomment-4',
-    'triage acme/app#2 head head2: approved on an older head only',
+    'triage acme/app#2 head head2: approved on an older head only: by monalisa at older, commits after it not read',
   ]);
   assert.deepEqual(r.writes, []);
   assert.deepEqual(w.run(['--mine', 'octocat', 'acme/app']).lines, []);
@@ -118,4 +118,35 @@ test('usage errors exit with status 2: a bad option, a missing --state, a --self
   const unread = world(repo([]), { fail: ['^api user$'] }).run(['acme/app']);
   assert.equal(unread.code, 1, 'a failed read of the account is not a usage error');
   assert.equal(unread.stderr, 'pr-to-merge: cannot read the account gh is logged in as (HTTP 502)\n');
+});
+
+// The words of an `exited` line's command as sh reads them.
+const words = (line) => require('node:child_process').execFileSync('sh', ['-c', `printf '%s\\n' ${line.slice('exited '.length)}`], { encoding: 'utf8' }).split('\n').slice(0, -1);
+
+test('every run that ends without a usage error ends with an exited line that repeats its own command line, quoted for sh', () => {
+  const w = world(repo([pr(1, { reviews: [approve('monalisa', 'older')] }), pr(2, { author: 'octocat', issueComments: [comment('monalisa', 5)] })]));
+  const args = ['--mine', 'octocat', '--automated', 'deps-bot[bot]', '--automated-path', 'deps/**', '--blocked-label', "don't merge", 'acme/app'];
+  const r = w.run(args);
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.lines.map((l) => l.split(':')[0]), ['triage acme/app#1 head head1', 'review acme/app#2 head head2']);
+  assert.ok(r.exited, `no exited line in:\n${r.stdout}`);
+  assert.ok(r.stdout.endsWith(`${r.exited}\n`), 'the `exited` line is the last line');
+  assert.deepEqual(words(r.exited), [process.execPath, SCRIPT, '--self', 'octocat', '--state', w.state, '--deadline', '0', ...args]);
+  // A run that reaches its deadline with nothing to report prints only the `exited` line.
+  const quiet = world(repo([pr(1)])).run(['acme/app']);
+  assert.deepEqual(quiet.lines, []);
+  assert.match(quiet.exited || '', / acme\/app$/);
+  // A run that cannot read the gh account (status 1) is started again too.
+  const unread = world(repo([]), { fail: ['^api user$'] }).run(['acme/app']);
+  assert.equal(unread.code, 1);
+  assert.match(unread.exited || '', / acme\/app$/);
+});
+
+test('a usage error prints nothing on standard output, so no `exited` line', () => {
+  const w = world(repo([]));
+  for (const [args, opts] of [[['--interval', 'soon', 'acme/app']], [['acme/app'], { self: 'monalisa' }], [['acme/app'], { noState: true }]]) {
+    const r = w.run(args, opts);
+    assert.equal(r.code, 2, args.join(' '));
+    assert.equal(r.stdout, '', args.join(' '));
+  }
 });
