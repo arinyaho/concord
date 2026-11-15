@@ -35,6 +35,8 @@ function globRegex(glob) {
 
 function parseArgs(argv) {
   const o = { automated: [], automatedPaths: [], checkout: new Map(), blockedLabel: 'blocked', noMerge: false, interval: 300, deadline: 3300, targets: new Map() };
+  // The `exited` line repeats every argument on one line.
+  if (argv.some((a) => /[\x00-\x1f\x7f]/.test(a))) usage('an argument holds a control character');
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const value = () => (i + 1 < argv.length ? argv[++i] : usage(`${a} needs a value`));
@@ -70,8 +72,8 @@ function parseArgs(argv) {
 
 const opts = parseArgs(process.argv.slice(2));
 
-// The last line of every run that is not a usage error: this run's own command line, quoted for sh (and for PowerShell
-// unless an argument holds a single quote). It repeats only the arguments; no option takes a secret (gh reads its own credentials).
+// The last line of every run that is not a usage error: this run's own command line, quoted for sh. It repeats only
+// the arguments; no option takes a secret (gh reads its own credentials).
 const quote = (a) => (/^[\w./:=-]+$/.test(a) ? a : `'${a.replace(/'/g, "'\\''")}'`);
 const EXITED = `exited ${[process.argv0, ...process.argv.slice(1)].map(quote).join(' ')}\n`;
 

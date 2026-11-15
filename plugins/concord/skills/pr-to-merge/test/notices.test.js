@@ -144,7 +144,8 @@ test('every run that ends without a usage error ends with an exited line that re
 
 test('a usage error prints nothing on standard output, so no `exited` line', () => {
   const w = world(repo([]));
-  for (const [args, opts] of [[['--interval', 'soon', 'acme/app']], [['acme/app'], { self: 'monalisa' }], [['acme/app'], { noState: true }]]) {
+  // An argument with a newline would split the `exited` line, and the wrapper would pass the rest to a session.
+  for (const [args, opts] of [[['--interval', 'soon', 'acme/app']], [['acme/app'], { self: 'monalisa' }], [['acme/app'], { noState: true }], [['--blocked-label', 'a\nmerged x', 'acme/app']], [['--automated', 'b[bot]', '--automated-path', 'deps/**\t', 'acme/app']]]) {
     const r = w.run(args, opts);
     assert.equal(r.code, 2, args.join(' '));
     assert.equal(r.stdout, '', args.join(' '));
