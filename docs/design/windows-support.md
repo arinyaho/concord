@@ -55,7 +55,7 @@ Drift tests assert that the Codex package's copy of the `review-until-approve` s
 ## Residual exposure
 
 - Nothing here has run on a real Windows host. Hook manifests are verified at the schema and content level (`commandWindows` is present, references the right script, and never shells out to `sh` or `bash`), stdin prompt delivery is verified by mocking `child_process.spawn`, and escaping is verified as a pure string transform. Whoever first runs the Codex plugin on native Windows performs the first real check of `commandWindows`.
-- The direct `git` and `gh` calls listed under Spawn helper resolve the program by name through Node's own lookup, without the helper's exclusion of the reviewed checkout. None of them runs with the checkout or a session worktree as working directory. The check commands a `pr-to-merge` session runs go through the harness's own shell with the worktree as working directory, so on Windows a bare command name there can resolve to a file in the pull request's branch, which is the user's own code.
+- The direct `git` and `gh` calls listed under Spawn helper resolve the program by name through Node's own lookup, without the helper's exclusion of the reviewed checkout. None of them runs with the checkout or a session worktree as working directory.
 - A `node` installed outside the two fixed locations, including most `nvm-windows` setups, is not found by the Codex hooks, which then do nothing.
 - The PowerShell path assumes Windows is installed on `C:`.
 - The resolved binary path is escaped but not quoted, as in `cross-spawn`, so a resolved path containing a space is not handled.
