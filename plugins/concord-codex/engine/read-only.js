@@ -1,22 +1,8 @@
 'use strict';
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 
 const SHELL_TOOLS = new Set(['shell', 'exec_command', 'local_shell']);
-
-// The data-directory contract names harness variables; the core vendor-neutrality guard bans
-// that prefix as a literal, so the names are assembled here.
-const CC_SESSION_VAR = ['CLAUDE', 'CODE_SESSION_ID'].join('_');
-const CC_CONFIG_VAR = ['CLAUDE', 'CONFIG_DIR'].join('_');
-
-function dataDir(env = process.env) {
-  if (env.EXPLAIN_PR_DIR) return env.EXPLAIN_PR_DIR;
-  const base = env[CC_SESSION_VAR]
-    ? env[CC_CONFIG_VAR] || path.join(os.homedir(), '.claude')
-    : env.CODEX_HOME || path.join(os.homedir(), '.codex');
-  return path.join(base, 'concord', 'explain-pr');
-}
 
 function DENY_REASON(dir) {
   return `explain-pr read-only mode: only reading ${dir} and the tools in allowed-tools.json are allowed. /clear or a new session ends the mode.`;
@@ -162,6 +148,6 @@ function decideCodex(event, { prsRoot, allowedTools }) {
 }
 
 module.exports = {
-  dataDir, readMode, writeMode, pruneModes, readAllowedTools, allToolNames,
+  readMode, writeMode, pruneModes, readAllowedTools, allToolNames,
   decideClaude, decideCodex, DENY_REASON,
 };

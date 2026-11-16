@@ -2,7 +2,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { tempDir } = require('./temp-dir');
 const ro = require('../../core/read-only');
@@ -131,12 +130,4 @@ test('readAllowedTools and allToolNames', () => {
   fs.writeFileSync(path.join(dir, 'allowed-tools.json'), '{"trackers":{"jira":["a","b"],"bad":"x","n":[1]}}');
   assert.deepEqual(ro.readAllowedTools(dir), { jira: ['a', 'b'], n: [] });
   assert.deepEqual(ro.allToolNames({ jira: ['a', 'b'], notion: ['c'] }), ['a', 'b', 'c']);
-});
-
-test('dataDir', () => {
-  assert.equal(ro.dataDir({ EXPLAIN_PR_DIR: '/x' }), '/x');
-  assert.equal(ro.dataDir({ CLAUDE_CODE_SESSION_ID: 's', CLAUDE_CONFIG_DIR: '/c' }), '/c/concord/explain-pr');
-  assert.equal(ro.dataDir({ CLAUDE_CODE_SESSION_ID: 's' }), path.join(os.homedir(), '.claude/concord/explain-pr'));
-  assert.equal(ro.dataDir({ CODEX_HOME: '/h' }), '/h/concord/explain-pr');
-  assert.equal(ro.dataDir({}), path.join(os.homedir(), '.codex/concord/explain-pr'));
 });
