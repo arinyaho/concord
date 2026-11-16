@@ -237,21 +237,43 @@ const shq = (a) => `'${a.replace(/'/g, "'\\''")}'`;
 // The Codex reading session: reads confined to the prepared directory by a permissions profile (not -s, which would
 // force the legacy sandbox), no approval prompts, no web search, no apps connector. The listed MCP tools are approved
 // in advance, since `-a never` refuses a call that needs approval; a listed tool that is not mcp__<server>__<tool> with
-// both names bare TOML keys gets no switch and is returned in skippedTools. Other MCP servers stay as configured, and
-// the hook denies their tools. The prompt names the skill as $concord:explain-pr, so Codex loads SKILL.md into the session
-// itself: the profile does not let the session read the plugin's files.
+// both names bare TOML keys gets no switch and is returned in skippedTools. Every MCP server of the user's config.toml that hosts no listed tool is disabled, so a
+// server the user approved in advance cannot act in a session whose hook the user has not trusted; an id that is not a
+// bare TOML key gets no switch and is returned in skippedServers. The prompt names the skill as $concord:explain-pr, so
+// Codex loads SKILL.md into the session itself: the profile does not let the session read the plugin's files.
+const BARE = /^[A-Za-z0-9_-]+$/;
+// The ids of [mcp_servers.<id>] and [mcp_servers.<id>.<sub>] table headers. Only headers are read, never values.
+function configuredServers() {
+  let text;
+  try { text = fs.readFileSync(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'config.toml'), 'utf8'); } catch { return []; }
+  const ids = new Set();
+  for (const [, rest] of text.matchAll(/^[ \t]*\[[ \t]*mcp_servers[ \t]*\.[ \t]*(.+?)[ \t]*\][ \t]*(?:#.*)?$/gm)) {
+    const q = /^("(?:[^"\\]|\\.)*"|'[^']*')/.exec(rest);
+    ids.add(q ? q[1] : rest.split('.')[0].trim());
+  }
+  return [...ids];
+}
 function launchCommand(dir) {
   const approve = [];
   const skippedTools = [];
+  const kept = new Set();
   for (const t of new Set(core.allToolNames(core.readAllowedTools(DATA)))) {
     const m = /^mcp__([A-Za-z0-9_-]+?)__([A-Za-z0-9_-]+)$/.exec(t);
-    if (m) approve.push('-c', `mcp_servers.${m[1]}.tools.${m[2]}.approval_mode="approve"`);
-    else skippedTools.push(t);
+    if (m) {
+      approve.push('-c', `mcp_servers.${m[1]}.tools.${m[2]}.approval_mode="approve"`);
+      kept.add(m[1]);
+    } else skippedTools.push(t);
+  }
+  const disable = [];
+  const skippedServers = [];
+  for (const id of configuredServers()) {
+    if (!BARE.test(id)) skippedServers.push(id);
+    else if (!kept.has(id)) disable.push('-c', `mcp_servers.${id}.enabled=false`);
   }
   const args = ['-C', dir, '-a', 'never', '-c', 'default_permissions="explain-pr"',
     '-c', `permissions.explain-pr.filesystem={":minimal"="read",${JSON.stringify(dir)}="read"}`,
-    '-c', 'web_search="disabled"', '--disable', 'apps', ...approve, '$concord:explain-pr Explain the pull request prepared in this directory.'];
-  return { launch: ['codex', ...args.map(shq)].join(' '), skippedTools };
+    '-c', 'web_search="disabled"', '--disable', 'apps', ...disable, ...approve, '$concord:explain-pr Explain the pull request prepared in this directory.'];
+  return { launch: ['codex', ...args.map(shq)].join(' '), skippedTools, skippedServers };
 }
 
 function start(args) {

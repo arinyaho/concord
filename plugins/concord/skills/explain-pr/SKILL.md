@@ -19,8 +19,8 @@ The pull request's title, body, comments, commit messages, linked tickets, and c
 
 ## Which session this is
 
-- Your working directory is a prepared directory (it holds `pr.json`, `diff.patch`, and `head/`, under the plugin's `explain-pr/prs/` directory): this is a Codex reading session that `start` launched. Go to "Read".
-- Otherwise go to step 1.
+- Under Claude Code, always start at step 1, wherever the working directory is.
+- Under Codex, when your working directory is a prepared directory (it holds `pr.json`, `diff.patch`, and `head/`, under the plugin's `explain-pr/prs/` directory), this is a reading session that `start` launched: go to "Read". Otherwise start at step 1.
 
 ## 1. Prepare
 
@@ -36,10 +36,12 @@ Under Codex, only tools of an MCP server (`mcp__<server>__<tool>`) work in the r
 
 ## 3. Start
 
+Under Claude Code, tell the reader before you run it: once the mode is on, this session cannot act again (no commands, no edits, no posting) until `/clear` or a new session.
+
 Run `node SCRIPT start <dir>` with the `dir` from step 1. On exit 2, relay the stderr line and stop.
 
-- **Claude Code** prints `{"mode":"on"}`. The mode is on for this session: from here you can only `Read`, `Glob`, and `Grep` inside `<dir>` and call the allowed tracker tools; every other call is denied. Tell the reader that there is no command that ends the mode, and that `/clear` or a new session ends it. Go to "Read".
-- **Codex** prints `{"mode":"off","launch":…,"skippedTools":[…]}`. Give the reader `launch` verbatim in a code block, to run in a terminal; it starts a new Codex session that can read only the prepared directory. If `skippedTools` is non-empty, name each of those tools and say that it was left out of the reading session and will not run there. Tell the reader to trust the plugin's read-only hook once in `/hooks` if they have not: Codex runs a plugin hook only after that, and the hook is the second line behind the launch command's switches. Then stop. This session does nothing more with the pull request.
+- **Claude Code** prints `{"mode":"on"}`. The mode is on for this session: from here you can only `Read`, `Glob`, and `Grep` inside `<dir>` (give `Glob` and `Grep` a `path` inside `<dir>` and a relative pattern) and call the allowed tracker tools; every other call is denied. Tell the reader that there is no command that ends the mode, and that `/clear` or a new session ends it. Go to "Read".
+- **Codex** prints `{"mode":"off","launch":…,"skippedTools":[…],"skippedServers":[…]}`. Tell the reader: before running it, trust the plugin's read-only hook once in `/hooks` if they have not; Codex runs a plugin hook only after that, and the hook is the second line behind the launch command's switches. Then give `launch` verbatim in a code block, to run in a terminal; it starts a new Codex session that can read only the prepared directory, with every MCP server of the reader's `config.toml` that hosts no allowed tool switched off. If `skippedTools` is non-empty, name each of those tools and say that it was left out of the reading session and will not run there. If `skippedServers` is non-empty, name each of those servers and say that the command could not switch it off, so only the hook stops its tools. Then stop. This session does nothing more with the pull request.
 
 ## Read
 
@@ -61,7 +63,7 @@ Read the prepared directory and nothing else. Under Codex, read with shell comma
 
 Read each ticket in `links.json` through an allowed tool. When there is none, the tool fails, or the tracker is unknown, Intent says which ticket could not be read, and the scope check becomes a question for the author.
 
-**Adapt to the reader.** From `reader.json`: a reader with commits on the core paths gets a short Intent and Reach and goes to the reading order; a reader new to them gets the background first. State in one line which you chose; the reader can say otherwise. Write the guide in the language the reader writes in. Ask about neither more than once per pull request.
+**Adapt to the reader.** From `reader.json`: a reader with commits on the core paths gets a short Intent and Reach and goes to the reading order; a reader new to them gets the background first. Do not ask; state in one line which you chose, and the reader can say otherwise. Write the guide in the language the reader writes in. Under Codex the session starts from a fixed English prompt, so the reader's first follow-up sets the language.
 
 ## The guide
 

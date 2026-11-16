@@ -41,6 +41,10 @@ test('the steps run prepare, allow, and start in that order, and no command ends
 test('the Codex path prints the launch command, names the skipped tools, and asks for hook trust', () => {
   assert.match(body, /`launch`/);
   assert.match(body, /`skippedTools`/);
+  assert.match(body, /`skippedServers`/);
+  assert.match(body, /Under Claude Code, always start at step 1/);
+  assert.match(body, /Under Codex, when your working directory is a prepared directory[^\n]*go to "Read"/);
+  assert.ok(body.indexOf('/hooks') < body.indexOf('give `launch` verbatim'), 'hook trust comes before the launch command');
   assert.match(body, /\/hooks/);
   assert.match(body, /git 2\.40/);
   assert.match(body, /reader\.json/);
