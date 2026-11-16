@@ -215,7 +215,7 @@ test('start turns the mode on under Claude Code and prints the reading-session c
     `'-c' 'permissions.explain-pr.filesystem={":minimal"="read",${JSON.stringify(real)}="read"}'`,
     `'-c' 'web_search="disabled"'`, `'--disable' 'apps'`,
     `'-c' 'mcp_servers.atlassian.tools.getJiraIssue.approval_mode="approve"'`,
-    `'Run the explain-pr skill on this directory.'`,
+    `'$concord:explain-pr Explain the pull request prepared in this directory.'`,
   ]) assert.ok(launch.includes(part), `${part} in ${launch}`);
   assert.ok(!launch.includes('--dangerously-bypass-hook-trust'));
   assert.deepEqual(off.json.skippedTools, []);
@@ -239,7 +239,7 @@ test('a listed tool whose names are not bare TOML keys is left out of the launch
   assert.deepEqual(r.json.skippedTools, odd);
   const parsed = spawnSync('sh', ['-c', `printf '%s\\n' ${r.json.launch.replace(/^codex /, '')}`], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
   assert.deepEqual(parsed.filter((a, i) => parsed[i - 1] === '-c' && a.startsWith('mcp_servers')), ['mcp_servers.atl.tools.get.approval_mode="approve"']);
-  assert.equal(parsed[parsed.length - 1], 'Run the explain-pr skill on this directory.');
+  assert.equal(parsed[parsed.length - 1], '$concord:explain-pr Explain the pull request prepared in this directory.');
   assert.ok(!r.json.launch.includes('a;rm') && !r.json.launch.includes('getIssue'));
 });
 

@@ -238,7 +238,8 @@ const shq = (a) => `'${a.replace(/'/g, "'\\''")}'`;
 // force the legacy sandbox), no approval prompts, no web search, no apps connector. The listed MCP tools are approved
 // in advance, since `-a never` refuses a call that needs approval; a listed tool that is not mcp__<server>__<tool> with
 // both names bare TOML keys gets no switch and is returned in skippedTools. Other MCP servers stay as configured, and
-// the hook denies their tools.
+// the hook denies their tools. The prompt names the skill as $concord:explain-pr, so Codex loads SKILL.md into the session
+// itself: the profile does not let the session read the plugin's files.
 function launchCommand(dir) {
   const approve = [];
   const skippedTools = [];
@@ -249,7 +250,7 @@ function launchCommand(dir) {
   }
   const args = ['-C', dir, '-a', 'never', '-c', 'default_permissions="explain-pr"',
     '-c', `permissions.explain-pr.filesystem={":minimal"="read",${JSON.stringify(dir)}="read"}`,
-    '-c', 'web_search="disabled"', '--disable', 'apps', ...approve, 'Run the explain-pr skill on this directory.'];
+    '-c', 'web_search="disabled"', '--disable', 'apps', ...approve, '$concord:explain-pr Explain the pull request prepared in this directory.'];
   return { launch: ['codex', ...args.map(shq)].join(' '), skippedTools };
 }
 

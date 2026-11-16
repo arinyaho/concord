@@ -43,16 +43,17 @@ The skill therefore reads the pull request only in **read-only mode**: while the
 
 ### Prepare, then read
 
-1. **Prepare.** Before the mode is on, the session runs `explain-pr.js prepare <owner/repo> <number> [--checkout <path>]`. The script uses `gh` and `git` and writes the prepared directory under the plugin's per-user data directory:
+1. **Prepare.** Before the mode is on, the session runs `explain-pr.js prepare <owner/repo> <number> [--checkout <path>]`. The script uses `gh` and `git` (2.40 or later, for `git check-attr --source`) and writes the prepared directory under the plugin's per-user data directory:
    - `pr.json`: number, title, body, author, base and head refs and commits, labels, draft state;
-   - `diff.patch` (with rename detection) and `files.json` (per file: status, additions, deletions, rename source, and whether it is marked generated or is a lockfile);
+   - `diff.patch`, the diff from the merge base to the head, built locally with rename detection and without the user's diff drivers, and `files.json` (per file: status, additions, deletions, rename source, and whether it is marked generated or is a lockfile);
    - `commits.json`: each commit's hash and message;
    - `threads.json` and `comments.json`: review threads and conversation comments;
-   - `issues/`: the body of each GitHub issue the pull request closes or references;
+   - `issues/`: the title, body, and state of each GitHub issue the pull request closes, and of each `#n` its title, body, and commit messages reference; a referenced pull request is marked as one;
    - `links.json`: every other ticket or document link in the title, body, and commit messages (a Jira key, a Notion or Asana URL), with the tracker it belongs to when it is recognized;
    - `checks.json`: the check runs on the head commit and their conclusions;
    - `reader.json`: for each changed path, the number of commits on it by the account `gh` is logged in as, read from the GitHub API; for a pull request that changes more than 100 files, only the 100 with the most changed lines are counted;
-   - `head/`: the tree of the head commit, from the given clone or a fresh shallow fetch, without its `.git` directory.
+   - `head/`: the tree of the head commit, from the given clone or a fresh shallow fetch, with every committed file and without a `.git` directory or any symlink;
+   - `symlinks.json`: each symlink of the head tree, with its target. The symlinks are removed from `head/`, so a tool that walks it cannot follow one out of the prepared directory.
 
    The script prints one JSON line: the directory's path, the file and line counts, the trackers of the links it found, and nothing from the pull request's text.
 
@@ -73,9 +74,16 @@ A `PreToolUse` hook with matcher `*` checks every tool call, and stays silent fo
 
 Codex's `PreToolUse` hook sees shell commands, patches, and MCP and local function tools, but not hosted tools such as web search, and its input names no agent; its documentation calls it not a complete enforcement boundary. Under Codex the boundary is therefore the sandbox, and the hook is a second line:
 
-- The session that prepares is the user's ordinary session, and it turns no mode on. Under Codex, `start` prints the command that starts a new reading session: Codex with a permissions profile that allows reads only in the prepared directory (and the Codex installation and configuration it needs), no writes, and no network for commands; web search off; only the MCP servers that provide the reader's tracker tools; its working directory set to the prepared directory; and the prompt to run `explain-pr` there. The user starts it; nothing from the pull request is read in the preparing session.
+- The session that prepares is the user's ordinary session, and it turns no mode on. Under Codex, `start` prints the command that starts a new reading session, and the user starts it; nothing from the pull request is read in the preparing session. The command gives Codex:
+  - a permissions profile, defined on the command line, that allows reads only in the prepared directory and the minimal system paths commands need, no writes, and no network for commands. It is a permissions profile and not `--sandbox`, because `--sandbox` selects the older sandbox, which cannot limit reads to one directory;
+  - no approval prompts, so the session cannot ask the user to run a command outside the profile;
+  - web search off, and the ChatGPT apps connector off, since it brings a web search tool of its own;
+  - advance approval for each listed tool of an MCP server (`mcp__<server>__<tool>`). Without it, a session that asks for no approval refuses the call. A listed tool named any other way gets no approval; `start` reports it, and it does not run in the reading session;
+  - the prepared directory as its working directory, and a prompt that names the skill as `$concord:explain-pr`. Naming it makes Codex load the skill's instructions into the session itself; the profile does not let the session read the plugin's files.
 - **Which session.** A Codex session is a reading session when its working directory lies inside the plugin's directory of prepared pull requests. The hook needs no session id, and the user's other sessions, whose working directories lie elsewhere, are unaffected.
-- **What is denied.** In a reading session the hook denies patches, local function tools, and every MCP tool not on the reader's list. Shell commands are left to the permissions profile, which confines reads to the prepared directory, so nothing the session can read outside the pull request reaches a tracker tool's arguments. The launch command's profile and switches are the boundary; the hook is the second line for the cases they miss.
+- **What is denied.** In a reading session the hook denies patches, local function tools, and every MCP tool not on the reader's list. Shell commands are left to the permissions profile, which confines reads to the prepared directory, so nothing the session can read outside the pull request reaches a tracker tool's arguments. MCP tools that are not listed get no advance approval, so the session refuses them even without the hook, unless the user's own configuration approves them in advance. The launch command's profile and switches are the boundary; the hook is the second line for the cases they miss.
+- **Hook trust.** Codex runs a plugin's hook only after the user has trusted it in `/hooks`. Until then the reading session runs with the launch command's switches alone, and the skill asks the user to trust the hook once.
+- **Tracker tools.** Only tools of an MCP server work in a reading session. Tracker tools served through ChatGPT apps are switched off with the apps connector.
 
 ### Tickets outside GitHub
 
@@ -97,6 +105,9 @@ Intent compares the pull request with its ticket, and Decisions cites tickets, w
 - A tool on the reader's list that writes is not stopped. The list is the reader's statement that each tool only reads.
 - The guide stays in the session that read the pull request. A view the reader forms there and wants to give `review-until-approve` is written by the reader in a new session, not carried over by the session.
 
+- Under Codex, the permissions profile leaves the system temporary directory readable, so a reading session can read files there.
+- Under Codex, an untrusted hook is skipped. A tool the user's own Codex configuration approves in advance then runs in the reading session whether or not it is listed.
+- Codex's documentation says that a `sandbox_mode` in a loaded configuration file makes Codex ignore the selected permissions profile. Codex 0.167 applies a profile selected on the command line regardless. A Codex version that behaves as documented would start the reading session without the read confinement for a user whose configuration sets `sandbox_mode`.
 - A mod or harness extension that can approve a call a hook denied overrides the mode under Claude Code. The mode protects against the pull request, not against the user's own configuration.
 - The mode does not stop the explanation from being wrong. Anchors make a wrong claim checkable; they do not make it right.
 - Evidence that a test fails without the change comes only from what CI or the pull request records. The skill runs no test.
