@@ -165,7 +165,30 @@ test('readAllowedTools and allToolNames', () => {
   assert.deepEqual(ro.readAllowedTools(dir), {});
   fs.writeFileSync(path.join(dir, 'allowed-tools.json'), 'nope');
   assert.deepEqual(ro.readAllowedTools(dir), {});
-  fs.writeFileSync(path.join(dir, 'allowed-tools.json'), '{"trackers":{"jira":["a","b"],"bad":"x","n":[1]}}');
-  assert.deepEqual(ro.readAllowedTools(dir), { jira: ['a', 'b'], n: [] });
+  fs.writeFileSync(path.join(dir, 'allowed-tools.json'), '{"trackers":{"jira":["mcp__a__b","Bash"],"bad":"x","n":[1]}}');
+  assert.deepEqual(ro.readAllowedTools(dir), { jira: ['mcp__a__b'], n: [] });
   assert.deepEqual(ro.allToolNames({ jira: ['a', 'b'], notion: ['c'] }), ['a', 'b', 'c']);
+});
+
+test('decideClaude: every Glob pattern it allows stays inside the prepared directory under fs.globSync', () => {
+  const root = fs.realpathSync(tempDir('ro-glob-'));
+  const dir = path.join(root, 'prs', 'o__r__1__abc');
+  for (const d of ['head/src/x', 'head/.hidden']) fs.mkdirSync(path.join(dir, d), { recursive: true });
+  for (const f of ['head/a.js', 'head/b.ts', 'head/src/x/c.ts']) fs.writeFileSync(path.join(dir, f), 'x');
+  fs.mkdirSync(path.join(root, 'outside'));
+  fs.writeFileSync(path.join(root, 'outside', 'secret'), 'x');
+  const o = { preparedDir: dir, allowedTools: [] };
+  const patterns = ['[.][.]/[.][.]/outside/*', '\\.\\./\\.\\./outside/*', '?./*', '.?/*', '[.]./*', '.[.]/*', '..?/*',
+    '.*/*', '[!a][!a]/*', '**/*.js', 'src/**/*.ts', '*.[jt]s', 'head/**/*.ts'];
+  const allowed = [];
+  for (const pattern of patterns) {
+    if (!ro.decideClaude(ev('Glob', { pattern, path: dir }), o).allow) continue;
+    allowed.push(pattern);
+    for (const p of fs.globSync(pattern, { cwd: dir })) {
+      const real = path.resolve(dir, p);
+      assert.ok(real === dir || real.startsWith(dir + path.sep), `${pattern} reached ${real}`);
+    }
+  }
+  for (const p of ['**/*.js', 'src/**/*.ts', '*.[jt]s', 'head/**/*.ts']) assert.ok(allowed.includes(p), p);
+  for (const p of ['[.][.]/[.][.]/outside/*', '\\.\\./\\.\\./outside/*', '?./*', '.?/*', '[.]./*']) assert.ok(!allowed.includes(p), p);
 });

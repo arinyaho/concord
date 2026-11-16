@@ -35,13 +35,14 @@ function writeMode(dir, sessionId, preparedDir) {
   fs.writeFileSync(file, `${fs.realpathSync(preparedDir)}\n`);
 }
 
+// Only MCP tools (mcp__<server>__<tool>) can be listed: a hand-edited file naming any other tool lists nothing.
 function readAllowedTools(dir) {
   try {
     const trackers = JSON.parse(fs.readFileSync(path.join(dir, 'allowed-tools.json'), 'utf8')).trackers;
     if (!trackers || typeof trackers !== 'object' || Array.isArray(trackers)) return {};
     const out = {};
     for (const [name, list] of Object.entries(trackers)) {
-      if (Array.isArray(list)) out[name] = list.filter((t) => typeof t === 'string');
+      if (Array.isArray(list)) out[name] = list.filter((t) => typeof t === 'string' && t.startsWith('mcp__'));
     }
     return out;
   } catch {
@@ -86,11 +87,19 @@ function pathInside(p, realDir) {
   return typeof p === 'string' && !hasDotDot(p) && within(p, realDir);
 }
 
-// A glob pattern is allowed when it is relative, has no ".." segment, no brace or group
-// alternatives and no "~" (each can hide an outside location), and its literal leading
-// segments, resolved under base, stay inside realDir (a symlink there may leave it).
+// A segment that could match "..": with "[" and "]" removed, two characters each "." or "?",
+// or anything containing "..". Classes like [.] and escapes like \. spell ".." without writing it.
+function mayBeDotDot(seg) {
+  const s = seg.replace(/[[\]]/g, '');
+  return /^[.?]{2}$/.test(s) || s.includes('..');
+}
+
+// A glob pattern is allowed when it is relative, has no backslash, no segment that could match
+// "..", no brace or group alternatives and no "~" (each can hide an outside location), and its
+// literal leading segments, resolved under base, stay inside realDir (a symlink there may leave it).
 function patternInside(pattern, base, realDir) {
-  if (typeof pattern !== 'string' || path.isAbsolute(pattern) || hasDotDot(pattern)) return false;
+  if (typeof pattern !== 'string' || path.isAbsolute(pattern) || pattern.includes('\\')) return false;
+  if (pattern.split('/').some(mayBeDotDot)) return false;
   if (/[{}()]/.test(pattern) || pattern.startsWith('~')) return false;
   const literal = [];
   for (const seg of pattern.split(/[\\/]/)) {

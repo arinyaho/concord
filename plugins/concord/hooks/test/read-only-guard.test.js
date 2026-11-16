@@ -92,3 +92,11 @@ test('hooks.json registers the guard on every PreToolUse', () => {
   assert.ok(entry);
   assert.equal(entry.hooks[0].command, 'node "${CLAUDE_PLUGIN_ROOT}/hooks/read-only-guard.js"');
 });
+
+test('a name in allowed-tools.json that is not an MCP tool is not allowed', () => {
+  const { dir } = setup();
+  fs.writeFileSync(path.join(dir, 'allowed-tools.json'), JSON.stringify({ trackers: { jira: ['Bash', 'Write', 'mcp__a__get'] } }));
+  const r = run(dir, bash('A'));
+  assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny');
+  assert.deepEqual(run(dir, JSON.stringify({ session_id: 'A', tool_name: 'mcp__a__get', tool_input: {} })), { stdout: '', status: 0 });
+});
