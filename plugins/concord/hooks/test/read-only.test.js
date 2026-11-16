@@ -98,9 +98,17 @@ test('decideClaude: every other tool is denied; listed tools allowed exactly', (
   assert.equal(ro.decideClaude(ev('mcp__atlassian__getJiraIssue'), o).allow, true);
 });
 
-test('decideClaude: an agent_id call is not checked', () => {
+test('decideClaude: a subagent call (agent_id) is checked like any other', () => {
   const { dir } = prepared();
-  assert.equal(ro.decideClaude(ev('Bash', {}, { agent_id: 'a1' }), { preparedDir: dir, allowedTools: [] }).allow, true);
+  const o = { preparedDir: dir, allowedTools: [] };
+  assert.equal(ro.decideClaude(ev('Bash', { command: 'ls' }, { agent_id: 'a1' }), o).allow, false);
+  assert.equal(ro.decideClaude(ev('Read', { file_path: '/etc/passwd' }, { agent_id: 'a1' }), o).allow, false);
+  assert.equal(ro.decideClaude(ev('Read', { file_path: `${dir}/head/a.js` }, { agent_id: 'a1' }), o).allow, true);
+});
+
+test('decideClaude: ToolSearch is allowed, since it only returns tool definitions', () => {
+  const { dir } = prepared();
+  assert.equal(ro.decideClaude(ev('ToolSearch', { query: 'select:mcp__a__b' }), { preparedDir: dir, allowedTools: [] }).allow, true);
 });
 
 test('decideClaude: a prepared directory that no longer exists denies everything (Review Focus 2)', () => {
@@ -129,7 +137,7 @@ test('decideCodex: outside prsRoot allows everything; inside denies patches, unl
   assert.equal(ro.decideCodex({ tool_name: 'apply_patch' }, o).allow, true);
 });
 
-test('mode files: write/read, prune by age, bad session ids', () => {
+test('mode files: write/read, bad session ids, a mode file that cannot be read throws', () => {
   const dir = tempDir('ro-data-');
   const { dir: pd } = prepared();
   assert.equal(ro.readMode(dir, 's1'), null);
@@ -142,16 +150,12 @@ test('mode files: write/read, prune by age, bad session ids', () => {
     assert.throws(() => ro.writeMode(dir, bad, pd));
   }
   assert.equal(fs.existsSync(path.join(dir, 'modes', 'undefined')), false);
-  ro.writeMode(dir, 'old', pd);
-  ro.writeMode(dir, 'recent', pd);
-  const now = Date.now();
-  const age = (n, days) => fs.utimesSync(path.join(dir, 'modes', n), new Date(now - days * 864e5), new Date(now - days * 864e5));
-  age('old', 31);
-  age('recent', 29);
-  assert.equal(ro.pruneModes(dir, now), 1);
-  assert.equal(ro.readMode(dir, 'old'), null);
-  assert.notEqual(ro.readMode(dir, 'recent'), null);
-  assert.equal(ro.pruneModes(tempDir('ro-empty-'), now), 0);
+  // A mode file that exists but is empty or unreadable is still a mode: '' (denies everything) or a throw.
+  fs.writeFileSync(path.join(dir, 'modes', 'empty'), '');
+  assert.equal(ro.readMode(dir, 'empty'), '');
+  fs.mkdirSync(path.join(dir, 'modes', 'adir'));
+  assert.throws(() => ro.readMode(dir, 'adir'));
+  assert.equal(ro.pruneModes, undefined, 'mode files are never pruned');
 });
 
 test('readAllowedTools and allToolNames', () => {

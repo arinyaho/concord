@@ -40,6 +40,23 @@ test('a session in the mode may Read inside the prepared directory: no output', 
   assert.deepEqual(r, { stdout: '', status: 0 });
 });
 
+test('a subagent call in a session in the mode is denied', () => {
+  const { dir } = setup();
+  const r = run(dir, JSON.stringify({ session_id: 'A', agent_id: 'sub1', tool_name: 'Bash', tool_input: { command: 'ls' } }));
+  assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny');
+});
+
+test('a mode file that exists but cannot be read, or is empty, denies (fail closed)', () => {
+  const { dir } = setup();
+  fs.mkdirSync(path.join(dir, 'modes', 'D'));
+  fs.writeFileSync(path.join(dir, 'modes', 'E'), '');
+  for (const sid of ['D', 'E']) {
+    const r = run(dir, bash(sid));
+    assert.equal(r.status, 0);
+    assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny', sid);
+  }
+});
+
 test('another session without a mode file is allowed everything: no output', () => {
   const { dir } = setup();
   assert.deepEqual(run(dir, bash('B')), { stdout: '', status: 0 });

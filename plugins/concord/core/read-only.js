@@ -15,13 +15,16 @@ function modeFile(dir, sessionId) {
   return path.join(dir, 'modes', id);
 }
 
+// The prepared directory a session's mode file names: null when the session has no mode file. A mode file that
+// exists is a mode even when it is empty ('', which denies everything) or cannot be read (the error is thrown).
 function readMode(dir, sessionId) {
   const file = modeFile(dir, sessionId);
   if (!file) return null;
   try {
-    return fs.readFileSync(file, 'utf8').trim() || null;
-  } catch {
-    return null;
+    return fs.readFileSync(file, 'utf8').trim();
+  } catch (e) {
+    if (e.code === 'ENOENT') return null;
+    throw e;
   }
 }
 
@@ -30,29 +33,6 @@ function writeMode(dir, sessionId, preparedDir) {
   if (!file) throw new Error(`invalid session id: ${sessionId}`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${fs.realpathSync(preparedDir)}\n`);
-}
-
-function pruneModes(dir, nowMs, maxAgeDays = 30) {
-  const modes = path.join(dir, 'modes');
-  let removed = 0;
-  let names;
-  try {
-    names = fs.readdirSync(modes);
-  } catch {
-    return 0;
-  }
-  for (const name of names) {
-    const file = path.join(modes, name);
-    try {
-      if (nowMs - fs.statSync(file).mtimeMs > maxAgeDays * 864e5) {
-        fs.rmSync(file, { force: true });
-        removed += 1;
-      }
-    } catch {
-      // vanished between readdir and stat
-    }
-  }
-  return removed;
 }
 
 function readAllowedTools(dir) {
@@ -120,8 +100,9 @@ function patternInside(pattern, base, realDir) {
   return within(path.join(base, ...literal), realDir);
 }
 
+// Every call of a session in the mode is checked, a subagent's included. ToolSearch only returns tool definitions;
+// it is how a deferred tool on the list becomes callable.
 function decideClaude(event, { preparedDir, allowedTools }) {
-  if (event.agent_id) return { allow: true };
   const deny = { allow: false, reason: DENY_REASON(preparedDir) };
   let realDir;
   try {
@@ -139,7 +120,7 @@ function decideClaude(event, { preparedDir, allowedTools }) {
   } else if (name === 'Grep') {
     ok = pathInside(input.path, realDir) && (input.glob === undefined || patternInside(input.glob, input.path, realDir));
   } else {
-    ok = allowedTools.includes(name);
+    ok = name === 'ToolSearch' || allowedTools.includes(name);
   }
   return ok ? { allow: true } : deny;
 }
@@ -159,6 +140,6 @@ function decideCodex(event, { prsRoot, allowedTools }) {
 }
 
 module.exports = {
-  readMode, writeMode, pruneModes, readAllowedTools, allToolNames,
+  readMode, writeMode, readAllowedTools, allToolNames,
   decideClaude, decideCodex, DENY_REASON,
 };

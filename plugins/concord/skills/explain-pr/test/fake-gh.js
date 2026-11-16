@@ -25,7 +25,6 @@ if (a[0] === 'pr' && a[1] === 'view') {
   out(Object.fromEntries(fields.map((f) => [f, pr[f]])));
 } else if (a[0] === 'api' && url === 'user') out({ login: w.login });
 else if (a[0] === 'api' && url === 'graphql') paged({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: w.threads } } } } });
-else if (a[0] === 'api' && (m = /^repos\\/[^/]+\\/[^/]+\\/pulls\\/\\d+\\/files$/.exec(url))) paged(w.files);
 else if (a[0] === 'api' && /^repos\\/[^/]+\\/[^/]+\\/issues\\/\\d+\\/comments$/.test(url)) paged(w.comments);
 else if (a[0] === 'api' && (m = /^repos\\/([^/]+\\/[^/]+)\\/issues\\/(\\d+)$/.exec(url))) {
   const issue = w.issues[m[1] + '#' + m[2]];

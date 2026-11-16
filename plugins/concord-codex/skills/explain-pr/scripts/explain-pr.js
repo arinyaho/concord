@@ -15,7 +15,8 @@ const { dataDir } = require('./data-dir');
 // The Claude plugin keeps the shared module in core/, the Codex bundle in engine/.
 const core = require(['core', 'engine'].map((d) => path.join(__dirname, '..', '..', '..', d, 'read-only.js')).find((p) => fs.existsSync(p)));
 
-const harness = process.env.CLAUDE_CODE_SESSION_ID ? 'claude' : 'codex';
+// A Codex session started from Claude Code's shell inherits CLAUDE_CODE_SESSION_ID; Codex's own marker wins.
+const harness = process.env.CLAUDE_CODE_SESSION_ID && !process.env.CODEX_THREAD_ID ? 'claude' : 'codex';
 const DATA = dataDir(process.env, harness);
 const PRS = path.join(DATA, 'prs');
 
@@ -42,6 +43,8 @@ const LOCKFILES = new Set(['package-lock.json', 'npm-shrinkwrap.json', 'yarn.loc
   'Cargo.lock', 'Gemfile.lock', 'poetry.lock', 'Pipfile.lock', 'uv.lock', 'composer.lock', 'go.sum', 'Podfile.lock',
   'pubspec.lock', 'mix.lock', 'flake.lock', 'packages.lock.json', 'gradle.lockfile', 'Package.resolved']);
 const NAME = /^[\w.-]+$/;
+// git's status letters in GitHub's words.
+const STATUS = { A: 'added', M: 'modified', D: 'removed', R: 'renamed', C: 'copied', T: 'changed' };
 
 const URL_RE = /https?:\/\/[^\s<>()[\]{}"'`|]+/g;
 const KEY_RE = /\b[A-Z][A-Z0-9]{1,9}-\d+\b/g;
@@ -76,12 +79,14 @@ function findLinks(texts) {
 }
 
 // Deletes every symlink under root, without following any, and returns each as { path, target }. A tool that walks
-// head/ could otherwise follow one out of the prepared directory where no hook sees it.
+// head/ could otherwise follow one out of the prepared directory where no hook sees it. A `.git` entry, which a crafted
+// tree can carry, is deleted too.
 function removeSymlinks(root, rel = '') {
   const found = [];
   for (const e of fs.readdirSync(path.join(root, rel), { withFileTypes: true })) {
     const p = rel ? `${rel}/${e.name}` : e.name;
-    if (e.isSymbolicLink()) {
+    if (e.name.toLowerCase() === '.git') fs.rmSync(path.join(root, p), { recursive: true, force: true });
+    else if (e.isSymbolicLink()) {
       found.push({ path: p, target: fs.readlinkSync(path.join(root, p)) });
       fs.unlinkSync(path.join(root, p));
     } else if (e.isDirectory()) found.push(...removeSymlinks(root, p));
@@ -101,12 +106,12 @@ function prepare(args) {
   if (pos.length !== 2 || !/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^\d+$/.test(num)) usage('usage: explain-pr.js prepare <owner/repo> <number> [--checkout <path>]');
   const [owner, name] = repo.split('/');
 
-  core.pruneModes(DATA, Date.now());
   fs.mkdirSync(PRS, { recursive: true });
-  // A temporary directory a day old belongs to a run that was killed, not to one still working.
+  // A temporary directory a day old belongs to a run that was killed, not to one still working. A prepared directory
+  // 30 days old is deleted; a session whose mode names it is then denied everything. Mode files are never deleted.
   for (const e of fs.readdirSync(PRS)) {
     const p = path.join(PRS, e);
-    try { if (e.startsWith('.tmp-') && Date.now() - fs.statSync(p).mtimeMs > DAY) fs.rmSync(p, { recursive: true, force: true }); } catch { /* vanished */ }
+    try { if (Date.now() - fs.statSync(p).mtimeMs > (e.startsWith('.tmp-') ? DAY : 30 * DAY)) fs.rmSync(p, { recursive: true, force: true }); } catch { /* vanished */ }
   }
   // Built under a temporary name and renamed at the end, so a failed run leaves nothing `start` accepts.
   const tmp = fs.mkdtempSync(path.join(PRS, '.tmp-'));
@@ -121,13 +126,12 @@ function prepare(args) {
     const messages = commits.map((c) => ({ oid: c.oid, message: c.messageBody ? `${c.messageHeadline}\n\n${c.messageBody}` : c.messageHeadline }));
     write('commits.json', messages);
 
-    step = 'read the changed files';
-    const changed = pages(`repos/${repo}/pulls/${num}/files`).flat();
     step = 'read the review threads';
     const query = `query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){
       reviewThreads(first:50,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{path line isResolved isOutdated comments(first:100){nodes{author{login} body createdAt}}}}}}}`;
     write('threads.json', gh('api', 'graphql', '--paginate', '--slurp', '-f', `query=${query}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `number=${num}`)
-      .flatMap((p) => p.data.repository.pullRequest.reviewThreads.nodes));
+      .flatMap((p) => p.data.repository.pullRequest.reviewThreads.nodes)
+      .map((t) => (t.comments?.nodes?.length >= 100 ? { ...t, truncated: true } : t)));
     step = 'read the comments';
     write('comments.json', pages(`repos/${repo}/issues/${num}/comments`).flat().map((c) => ({ author: c.user?.login, body: c.body, createdAt: c.created_at })));
     step = 'read the linked issues';
@@ -170,24 +174,41 @@ function prepare(args) {
     fs.writeFileSync(path.join(gitDir, 'info', 'attributes'), '* -export-ignore -export-subst\n');
     step = 'write the diff';
     // The diff GitHub shows, made locally (gh pr diff refuses large pull requests), without the user's diff drivers.
-    fs.writeFileSync(path.join(tmp, 'diff.patch'), run('git', ['-C', gitDir, 'diff', '-M', '--no-ext-diff', '--no-textconv', '--no-color',
-      '--src-prefix=a/', '--dst-prefix=b/', mergeBase, head], { encoding: 'buffer' }));
+    const diff = (...a) => run('git', ['-C', gitDir, 'diff', '-M', '--no-ext-diff', '--no-textconv', '--no-color', ...a, mergeBase, head], { encoding: 'buffer' });
+    fs.writeFileSync(path.join(tmp, 'diff.patch'), diff('--src-prefix=a/', '--dst-prefix=b/'));
+    // The file list from the same two commits (GitHub's files endpoint stops at 3000 files). Both outputs are in the
+    // same order; a rename is "R<score>\0<from>\0<to>" and "<add>\t<del>\t\0<from>\0<to>", a binary file counts "-".
+    const fields = (buf) => buf.toString('utf8').split('\0');
+    const ns = fields(diff('--name-status', '-z'));
+    const nums = fields(diff('--numstat', '-z'));
+    const changed = [];
+    for (let i = 0, j = 0; i + 1 < ns.length;) {
+      const code = ns[i][0];
+      const renamed = code === 'R' || code === 'C';
+      const [from, to] = renamed ? [ns[i + 1], ns[i + 2]] : [undefined, ns[i + 1]];
+      i += renamed ? 3 : 2;
+      const [add, del] = nums[j].split('\t');
+      j += renamed ? 3 : 1;
+      changed.push({
+        path: to, status: STATUS[code] || 'changed',
+        ...(add === '-' ? { additions: 0, deletions: 0, binary: true } : { additions: Number(add), deletions: Number(del) }),
+        ...(from !== undefined && { previous: from }),
+      });
+    }
     step = 'extract the head tree';
     git('archive', '--format=tar', '-o', path.join(gitDir, 'head.tar'), head);
     fs.mkdirSync(path.join(tmp, 'head'));
     run('tar', ['-xf', path.join(gitDir, 'head.tar'), '-C', path.join(tmp, 'head')]);
     const symlinks = removeSymlinks(path.join(tmp, 'head'));
     write('symlinks.json', symlinks);
-    const attrs = run('git', ['-C', gitDir, 'check-attr', '-z', '--stdin', '--source', head, 'linguist-generated'], { input: changed.map((f) => f.filename).join('\0') }).split('\0');
+    const attrs = run('git', ['-C', gitDir, 'check-attr', '-z', '--stdin', '--source', head, 'linguist-generated'], { input: changed.map((f) => f.path).join('\0') }).split('\0');
     const generated = new Set();
     for (let i = 0; i + 2 < attrs.length; i += 3) if (['set', 'true'].includes(attrs[i + 2])) generated.add(attrs[i]);
 
     const links = new Map(symlinks.map((s) => [s.path, s.target]));
     const files = changed.map((f) => ({
-      path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions,
-      ...(f.previous_filename && { previous: f.previous_filename }),
-      lockfile: LOCKFILES.has(path.posix.basename(f.filename)), generated: generated.has(f.filename),
-      ...(links.has(f.filename) && { symlink: links.get(f.filename) }),
+      ...f, lockfile: LOCKFILES.has(path.posix.basename(f.path)), generated: generated.has(f.path),
+      ...(links.has(f.path) && { symlink: links.get(f.path) }),
     }));
     write('files.json', files);
 
@@ -223,7 +244,7 @@ function prepare(args) {
 }
 
 function allow([tracker, ...tools]) {
-  if (!tracker || !NAME.test(tracker) || !tools.length || tools.some((t) => !/^\S+$/.test(t))) usage('usage: explain-pr.js allow <tracker> <tool>...');
+  if (!tracker || !NAME.test(tracker) || !tools.length || tools.some((t) => !/^mcp__\S+$/.test(t))) usage('usage: explain-pr.js allow <tracker> <mcp__tool>...');
   const list = core.readAllowedTools(DATA);
   list[tracker] = [...new Set([...(list[tracker] || []), ...tools])];
   fs.mkdirSync(DATA, { recursive: true });
@@ -242,16 +263,30 @@ const shq = (a) => `'${a.replace(/'/g, "'\\''")}'`;
 // bare TOML key gets no switch and is returned in skippedServers. The prompt names the skill as $concord:explain-pr, so
 // Codex loads SKILL.md into the session itself: the profile does not let the session read the plugin's files.
 const BARE = /^[A-Za-z0-9_-]+$/;
-// The ids of [mcp_servers.<id>] and [mcp_servers.<id>.<sub>] table headers. Only headers are read, never values.
+const UNPARSED = '<unparsed mcp_servers form>';
+// The ids of [mcp_servers.<id>] and [mcp_servers.<id>.<sub>] table headers. Only headers are read, never values. Any
+// other form that defines servers (an [mcp_servers] table, a dotted or inline mcp_servers key), and a header-shaped
+// line inside a multi-line string, is reported as UNPARSED, so no value is ever printed.
+// ponytail: a line scan, not a TOML parser; a comment holding """ or ''' can mislead it, and then it reports UNPARSED.
 function configuredServers() {
   let text;
   try { text = fs.readFileSync(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'config.toml'), 'utf8'); } catch { return []; }
   const ids = new Set();
-  for (const [, rest] of text.matchAll(/^[ \t]*\[[ \t]*mcp_servers[ \t]*\.[ \t]*(.+?)[ \t]*\][ \t]*(?:#.*)?$/gm)) {
-    const q = /^("(?:[^"\\]|\\.)*"|'[^']*')/.exec(rest);
-    ids.add(q ? q[1] : rest.split('.')[0].trim());
+  let open = null; // the delimiter of the multi-line string a line is inside
+  for (const line of text.split(/\r?\n/)) {
+    const header = /^[ \t]*\[[ \t]*mcp_servers[ \t]*\.[ \t]*(.+?)[ \t]*\][ \t]*(?:#.*)?$/.exec(line);
+    if (open && (header || /mcp_servers/.test(line))) ids.add(UNPARSED);
+    else if (header) {
+      const q = /^("(?:[^"\\]|\\.)*"|'[^']*')/.exec(header[1]);
+      ids.add(q ? q[1] : header[1].split('.')[0].trim());
+    } else if (/^\s*(\[\s*mcp_servers\s*\]|mcp_servers\s*[.=])/.test(line)) ids.add(UNPARSED);
+    for (const [d] of line.matchAll(/"""|'''/g)) {
+      if (!open) open = d;
+      else if (d === open) open = null;
+    }
   }
-  return [...ids];
+  // UNPARSED last, after the ids, whatever order the lines came in.
+  return [...ids].filter((id) => id !== UNPARSED).concat(ids.has(UNPARSED) ? [UNPARSED] : []);
 }
 function launchCommand(dir) {
   const approve = [];
@@ -267,12 +302,14 @@ function launchCommand(dir) {
   const disable = [];
   const skippedServers = [];
   for (const id of configuredServers()) {
-    if (!BARE.test(id)) skippedServers.push(id);
+    if (id === UNPARSED || !BARE.test(id)) skippedServers.push(id);
     else if (!kept.has(id)) disable.push('-c', `mcp_servers.${id}.enabled=false`);
   }
   const args = ['-C', dir, '-a', 'never', '-c', 'default_permissions="explain-pr"',
     '-c', `permissions.explain-pr.filesystem={":minimal"="read",${JSON.stringify(dir)}="read"}`,
-    '-c', 'web_search="disabled"', '--disable', 'apps', ...disable, ...approve, '$concord:explain-pr Explain the pull request prepared in this directory.'];
+    '-c', 'web_search="disabled"', '--disable', 'apps', '--disable', 'browser_use', '--disable', 'computer_use',
+    '--disable', 'multi_agent', '--disable', 'image_generation', '-c', 'shell_environment_policy.inherit="core"',
+    ...disable, ...approve, '$concord:explain-pr Explain the pull request prepared in this directory.'];
   return { launch: ['codex', ...args.map(shq)].join(' '), skippedTools, skippedServers };
 }
 
@@ -293,8 +330,11 @@ function start(args) {
   print({ mode: 'on' });
 }
 
-const [cmd, ...rest] = process.argv.slice(2);
-if (cmd === 'prepare') prepare(rest);
-else if (cmd === 'allow') allow(rest);
-else if (cmd === 'start') start(rest);
-else usage('usage: explain-pr.js prepare|allow|start ...');
+if (require.main === module) {
+  const [cmd, ...rest] = process.argv.slice(2);
+  if (cmd === 'prepare') prepare(rest);
+  else if (cmd === 'allow') allow(rest);
+  else if (cmd === 'start') start(rest);
+  else usage('usage: explain-pr.js prepare|allow|start ...');
+}
+module.exports = { removeSymlinks };
