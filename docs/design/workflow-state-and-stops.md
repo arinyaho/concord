@@ -24,7 +24,7 @@ These kinds of local file are allowed. None records the state of the work, and e
 - **Locks.** A script may keep a lock file so that two runs do not work on the same thing at once. A lock decides only whether a run may start, and a run takes one over only when its holder is not running. Deleting one lets two runs overlap.
 - **Watch lists.** `review-until-approve` keeps the pull requests its background watcher checks, each with the account, harness, model, and effort to use, adding one when the user invokes the skill on it and removing one when the user stops it or it is merged or closed. It decides which pull requests are checked, how a round's agents start, and that the watcher may run rounds on them, approval included, as the user's invocation authorized. The watcher exits when it is empty. Deleting it stops the checks; invoking the skill on a pull request adds it again. `pr-to-merge` keeps the repositories its watcher checks, each with the options of the invocation, including whether merging is authorized there, until the user removes the entry or seven days pass; it decides which pull requests are acted on and whether they may merge.
 - **The user's review notes.** `review-until-approve` keeps a user's notes on a pull request in the store the user chose (a secret gist or a private repository of theirs), with a local copy as a cache that is the only copy until the user chooses. They are the user's input to its rounds, not the state of the work.
-- **Read-only modes.** A file per session that names the one directory the session may read and, for a confined agent, the one file it may write; for a `pr-to-merge` headless session, also the worktree, without its `.git`, it may edit. It decides only what that session's tools may do.
+- **Read-only modes.** A file per session that names the one directory the session may read and, for a confined agent, the one file it may write; for a `pr-to-merge` headless session, also the worktree and session directory it may edit. It decides only what that session's tools may do.
 - **Logs.** Output kept for a person to read, such as the GitHub messages a polling script does not print. The session does not read them, and they decide nothing.
 
 Minor points that a workflow does not fix are collected into one follow-up ticket in the project's tracker. `pr-to-merge` files none: a minor point it does not fix on the user's own pull request is listed in its reply and in its report to the user.
@@ -84,13 +84,13 @@ The user can authorize a kind of action once for a run, such as "merge approved 
 
 The coordinating session also copies each authorization to the tracking ticket as a decision record, for people to read. No workflow reads a ticket or a comment back as an authorization, because other people can write there.
 
-A background watcher has no conversation with the user. `pr-to-merge`'s watcher reads the merge authorization from its watch list, where the skill records it only from the user's words in the invocation or from a standing authorization the coordinating session recorded, and where it lasts until the user removes the entry or seven days pass. That is the one other place an authorization is read from.
+A background watcher has no conversation with the user. `pr-to-merge`'s watcher reads the merge authorization from its watch list, where the skill records it only from the user's words in the invocation or from a standing authorization the coordinating session recorded, and where it lasts until the user removes the entry or seven days after the user's words that authorized it. That is the one other place an authorization is read from.
 
 An authorization covers the kind of action and the repositories the user named, and nothing wider.
 
 ## Harnesses
 
-The workflows run on Claude Code and Codex. A workflow uses the harness's own agents for workers and reviewers: a subagent, or a separate process of the same harness where confinement requires one or no session is open, as for the headless sessions of `pr-to-merge`. Such a process is always confined: it runs no command, and the script that started it runs none of the code it read or edited. It never uses another vendor's agent.
+The workflows run on Claude Code and Codex. A workflow uses the harness's own agents for workers and reviewers: a subagent, or a separate process of the same harness where confinement requires one or no session is open, as for the headless sessions of `pr-to-merge`. Such a process is always confined: it holds no credential and has no network; under Claude Code it runs no command, and under Codex its commands run only inside a permissions profile limited to its own directories. The script that started it runs none of the code it read or edited. It never uses another vendor's agent.
 
 ## Why
 
