@@ -54,7 +54,9 @@ The skill therefore reads the pull request only in **read-only mode**: while the
    - `reader.json`: for each changed path, the number of commits on it by the account `gh` is logged in as, read from the GitHub API; for a pull request that changes more than 100 files, only the 100 with the most changed lines are counted;
    - `head/`: the tree of the head commit, from the given clone or a fresh shallow fetch, without its `.git` directory.
 
-   The script prints one JSON line: the directory's path, the file and line counts, and nothing from the pull request's text. As its last act it turns the mode on for the current session.
+   The script prints one JSON line: the directory's path, the file and line counts, the trackers of the links it found, and nothing from the pull request's text.
+
+   When a tracker has no tool on the reader's list, the session makes the list now (see Tickets outside GitHub), still without reading the pull request. Then it runs `explain-pr.js start <dir>`, which turns the mode on for the current session. Turning the mode on is the only thing `start` can do, so text in the pull request gains nothing by calling it.
 2. **Read.** The session reads the prepared directory, reads the linked tickets through the reader's tracker tools (see Tickets outside GitHub), and writes the guide.
 3. **End.** The mode has no command that ends it. It ends only by an act of the reader: `/clear`, which gives the session a new id and drops the pull request's text from its context, or a new session. A session that has read the pull request keeps no way to act, because any command the mode allowed for leaving it could be called by text in the pull request as easily as by the reader. Resuming a session that was in the mode resumes the mode. `prepare` deletes mode files older than 30 days.
 
@@ -62,7 +64,7 @@ The skill therefore reads the pull request only in **read-only mode**: while the
 
 A `PreToolUse` hook with matcher `*` checks every tool call, and stays silent for any session without a mode file.
 
-- **Which session.** `prepare` writes a mode file named by `CLAUDE_CODE_SESSION_ID`, which equals the `session_id` the hook receives. The file holds the prepared directory's real path.
+- **Which session.** `start` writes a mode file named by `CLAUDE_CODE_SESSION_ID`, which equals the `session_id` the hook receives. The file holds the prepared directory's real path.
 - **What is allowed.** In a session with a mode file, a call that carries no `agent_id` (a call by the main session) is allowed only when it is `Read`, `Glob`, or `Grep` with every path-like input (`file_path`, `path`, `Glob`'s `pattern`, `Grep`'s `path` and `glob`) inside the prepared directory after resolving links, with no absolute or `..` pattern; or a tracker tool on the reader's list (see Tickets outside GitHub). Every other call is denied, with a reason that names the mode and says that `/clear` or a new session ends it.
 - **Subagents.** A call that carries an `agent_id` belongs to a subagent the session started before the mode; it is not checked. The mode denies the `Agent` and `SendMessage` tools, so the session cannot start or steer one while it reads.
 - **Strength.** A `PreToolUse` deny holds in every permission mode, including the one that skips permission prompts.
@@ -71,7 +73,7 @@ A `PreToolUse` hook with matcher `*` checks every tool call, and stays silent fo
 
 Codex's `PreToolUse` hook sees shell commands, patches, and MCP and local function tools, but not hosted tools such as web search, and its input names no agent; its documentation calls it not a complete enforcement boundary. Under Codex the boundary is therefore the sandbox, and the hook is a second line:
 
-- The session that prepares is the user's ordinary session, and it turns no mode on. After `prepare`, it prints the command that starts a new reading session: Codex with a permissions profile that allows reads only in the prepared directory (and the Codex installation and configuration it needs), no writes, and no network for commands; web search off; only the MCP servers that provide the reader's tracker tools; its working directory set to the prepared directory; and the prompt to run `explain-pr` there. The user starts it; nothing from the pull request is read in the preparing session.
+- The session that prepares is the user's ordinary session, and it turns no mode on. Under Codex, `start` prints the command that starts a new reading session: Codex with a permissions profile that allows reads only in the prepared directory (and the Codex installation and configuration it needs), no writes, and no network for commands; web search off; only the MCP servers that provide the reader's tracker tools; its working directory set to the prepared directory; and the prompt to run `explain-pr` there. The user starts it; nothing from the pull request is read in the preparing session.
 - **Which session.** A Codex session is a reading session when its working directory lies inside the plugin's directory of prepared pull requests. The hook needs no session id, and the user's other sessions, whose working directories lie elsewhere, are unaffected.
 - **What is denied.** In a reading session the hook denies patches, local function tools, and every MCP tool not on the reader's list. Shell commands are left to the permissions profile, which confines reads to the prepared directory, so nothing the session can read outside the pull request reaches a tracker tool's arguments. The launch command's profile and switches are the boundary; the hook is the second line for the cases they miss.
 
