@@ -1,10 +1,10 @@
 # Installed script locator
 
-A skill whose commands run across hours or days cannot keep a script path it resolved once: the Codex updater removes the previous version directory while the skill waits. `review-until-approve` therefore resolves its `scripts/` directory again before every command, with one locator command written in its skill text, and `pr-to-merge`'s background watcher resolves `scripts/pr-to-merge.js` the same way before every check. This document defines which installed copy the locator selects.
+A skill whose commands run across hours or days cannot keep a script path it resolved once: a plugin updater removes the previous version directory while the skill waits. `review-until-approve` therefore resolves its `scripts/` directory again before every command, with one locator command written in its skill text, and its background watcher resolves it again before every check and round. `pr-to-merge`'s background watcher resolves `scripts/pr-to-merge.js` the same way before every check. This document defines which installed copy the locator selects.
 
 ## Decision
 
-The locator searches the installed plugin caches of Claude Code and Codex for the skill's entry script (`scripts/approve.js` under `review-until-approve`). It never searches the reviewed checkout or the current directory.
+The locator searches the installed plugin caches of Claude Code and Codex for the skill's entry script (`scripts/review-until-approve.js` under `review-until-approve`). It never searches the reviewed checkout or the current directory.
 
 At each ancestor directory of a candidate script the locator reads, in order, `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, and `plugin.json`. The first that parses decides that candidate: it is kept when its `name` is `concord` and its `version` is a string, and skipped otherwise.
 
