@@ -78,7 +78,7 @@ Read each ticket in `links.json` through an allowed tool. When there is none, th
 | 4. Decisions | Each choice the change makes, the alternative it rules out, and its source: a link to the design document, ticket, review thread, or commit message that records it; `inferred` with the code or commit it is inferred from; or `no record` |
 | 5. Reach | The callers, contracts, stored data, configuration, and security boundaries the core change affects, each with where it is |
 | 6. Evidence | The tests that exercise each core hunk, the CI result on the head, and whether anything shows the tests fail without the change; what nothing shows is stated as unverified |
-| 7. Questions for the author | Every `no record` decision, every unverified point, and every gap between the ticket and the diff, written so the reader can post them as they are |
+| 7. Questions for the author | Every `no record` decision, every unverified point, and every gap between the ticket and the diff, presented as questions for the reader to check against the diff before asking, not as text to post unread |
 
 Rules:
 

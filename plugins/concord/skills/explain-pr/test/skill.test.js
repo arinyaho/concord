@@ -73,5 +73,7 @@ test('the reader is told not to fork or resume a reading session to act, and how
 test('a changed .gitattributes is core, questions are for the reader to check, and --checkout works for any host', () => {
   assert.match(body, /A changed `\.gitattributes` is core/);
   assert.match(body, /Questions for the author[^\n]*for the reader to check[^\n]*not text to post unread/);
+  assert.doesNotMatch(skill, /post them as they are/);
+  assert.match(body, /\| 7\. Questions for the author \|[^\n]*for the reader to check against the diff before asking, not as text to post unread/);
   assert.match(body, /--checkout[^\n]*any host/);
 });

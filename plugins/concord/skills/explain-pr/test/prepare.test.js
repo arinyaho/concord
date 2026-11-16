@@ -239,7 +239,7 @@ test('start turns the mode on under Claude Code and prints the reading-session c
   assert.ok(launch.startsWith('codex '), launch);
   for (const part of [
     `'-C' '${real}'`, `'-a' 'never'`, `'-c' 'default_permissions="explain-pr"'`,
-    `'-c' 'permissions.explain-pr.filesystem={":minimal"="read",${JSON.stringify(real)}="read","/tmp"="none"}'`,
+    `'-c' 'permissions.explain-pr.filesystem={":minimal"="read",${JSON.stringify(real)}="read","/tmp"="none","/var/tmp"="none"}'`,
     `'-c' 'web_search="disabled"'`, `'--disable' 'apps'`, `'--disable' 'browser_use'`, `'--disable' 'computer_use'`,
     `'--disable' 'multi_agent'`, `'--disable' 'image_generation'`, `'-c' 'shell_environment_policy.inherit="core"'`,
     `'-c' 'mcp_servers.atlassian.tools.getJiraIssue.approval_mode="approve"'`,

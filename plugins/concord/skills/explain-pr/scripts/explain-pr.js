@@ -201,7 +201,9 @@ function prepare(args) {
     run('tar', ['-xf', path.join(gitDir, 'head.tar'), '-C', path.join(tmp, 'head')]);
     const symlinks = removeSymlinks(path.join(tmp, 'head'));
     write('symlinks.json', symlinks);
-    // `generated` follows the merge base's .gitattributes: the pull request cannot move its own files out of the core.
+    // `generated` follows the merge base's .gitattributes, so the pull request's own changes to it mark nothing
+    // generated. A file it adds or renames into a path the merge base already marks generated is still marked; the
+    // skill's check that each mechanical file is mechanical is what catches that.
     const attrs = run('git', ['-C', gitDir, 'check-attr', '-z', '--stdin', '--source', mergeBase, 'linguist-generated'], { input: changed.map((f) => f.path).join('\0') }).split('\0');
     const generated = new Set();
     for (let i = 0; i + 2 < attrs.length; i += 3) if (['set', 'true'].includes(attrs[i + 2])) generated.add(attrs[i]);
@@ -257,8 +259,8 @@ function allow([tracker, ...tools]) {
 
 const shq = (a) => `'${a.replace(/'/g, "'\\''")}'`;
 // The Codex reading session: reads confined to the prepared directory by a permissions profile (not -s, which would
-// force the legacy sandbox), with /tmp denied (the minimal system paths leave it readable and writable; an agent the
-// session spawns runs under the same profile), no approval prompts, no web search, no apps connector. The listed MCP tools are approved
+// force the legacy sandbox), with /tmp and /var/tmp denied (the minimal system paths leave both readable and writable;
+// an agent the session spawns runs under the same profile), no approval prompts, no web search, no apps connector. The listed MCP tools are approved
 // in advance, since `-a never` refuses a call that needs approval; a listed tool that is not mcp__<server>__<tool> with
 // both names bare TOML keys gets no switch and is returned in skippedTools. Every MCP server of the user's config.toml that hosts no listed tool is disabled, so a
 // server the user approved in advance cannot act in a session whose hook the user has not trusted; an id that is not a
@@ -313,7 +315,7 @@ function launchCommand(dir) {
     else if (!kept.has(id)) disable.push('-c', `mcp_servers.${id}.enabled=false`);
   }
   const args = ['-C', dir, '-a', 'never', '-c', 'default_permissions="explain-pr"',
-    '-c', `permissions.explain-pr.filesystem={":minimal"="read",${JSON.stringify(dir)}="read","/tmp"="none"}`,
+    '-c', `permissions.explain-pr.filesystem={":minimal"="read",${JSON.stringify(dir)}="read","/tmp"="none","/var/tmp"="none"}`,
     '-c', 'web_search="disabled"', '--disable', 'apps', '--disable', 'browser_use', '--disable', 'computer_use',
     '--disable', 'multi_agent', '--disable', 'image_generation', '-c', 'shell_environment_policy.inherit="core"',
     ...disable, ...approve, '$concord:explain-pr Explain the pull request prepared in this directory.'];
