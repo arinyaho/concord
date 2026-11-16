@@ -25,7 +25,7 @@ test('the Codex package ships exactly the bundled shared skills, byte for byte a
 
 // Codex plugins surface skills, not slash commands or agent definitions.
 test('the Codex package carries the workflows as skills and needs no agent definition', () => {
-  for (const name of ['review-and-fix', 'coordinate-sessions', 'ticket-to-pr', 'initiative-to-prs', 'pr-to-merge']) {
+  for (const name of ['review-and-fix', 'coordinate-sessions', 'ticket-to-pr', 'initiative-to-prs', 'pr-to-merge', 'explain-pr']) {
     const skill = fs.readFileSync(path.join(CODEX, 'skills', name, 'SKILL.md'), 'utf8');
     assert.match(skill, new RegExp(`^---\\nname: ${name}\\ndescription: >-\\n`), name);
     assert.doesNotMatch(skill, /CLAUDE_PLUGIN_ROOT/, name);

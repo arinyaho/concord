@@ -291,7 +291,7 @@ test('maintained package metadata and docs advertise the shared capability set',
   for (const contents of files) assert.match(contents, /proposal-package-authoring/i);
   // Only the README and the marketplace are held to the current workflow set.
   for (const contents of [files[0], files[3]]) {
-    for (const name of ['review-and-fix', 'pr-to-merge', 'coordinate-sessions', 'review-until-approve']) assert.match(contents, new RegExp(name), name);
+    for (const name of ['review-and-fix', 'pr-to-merge', 'coordinate-sessions', 'review-until-approve', 'explain-pr']) assert.match(contents, new RegExp(name), name);
     assert.doesNotMatch(contents, /review-until-lgtm|review-until-green|project-manager|Copilot/i);
   }
   assert.doesNotMatch(files[0], /Session-state and charter are Claude-Code-only/i);
@@ -303,7 +303,7 @@ test('maintained package metadata and docs advertise the shared capability set',
   assert.match(claudeManifest.description, /initiative-to-prs/);
   assert.match(codexManifest.description, /initiative-to-prs/);
 
-  for (const name of ['ticket-to-pr', 'initiative-to-prs', 'review-and-fix', 'pr-to-merge', 'coordinate-sessions', 'review-until-approve']) {
+  for (const name of ['ticket-to-pr', 'initiative-to-prs', 'review-and-fix', 'pr-to-merge', 'coordinate-sessions', 'review-until-approve', 'explain-pr']) {
     assert.match(files[0], new RegExp(`^\\| \`${name}\` \\|`, 'm'));
   }
 

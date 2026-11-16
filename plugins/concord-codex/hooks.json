@@ -1,5 +1,5 @@
 {
-  "description": "Persist per-session state from the Codex rollout and re-inject it on session start.",
+  "description": "Persist per-session state from the Codex rollout, re-inject it on session start, and keep an explain-pr reading session read-only.",
   "hooks": {
     "Stop": [
       {
@@ -20,6 +20,18 @@
             "type": "command",
             "command": "sh -c 'r=\"$PLUGIN_ROOT\"; [ -n \"$r\" ] || r=\"$CLAUDE_PLUGIN_ROOT\"; [ -n \"$r\" ] || exit 0; n=\"$(command -v node 2>/dev/null)\"; [ -n \"$n\" ] || { for c in \"$NVM_BIN/node\" \"$HOME\"/.nvm/versions/node/*/bin/node /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do [ -x \"$c\" ] && { n=\"$c\"; break; }; done; }; [ -n \"$n\" ] || exit 0; exec \"$n\" \"$r/hooks/session-state-injector.js\"'",
             "commandWindows": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -Command \"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $r = $env:PLUGIN_ROOT; if (-not $r) { $r = $env:CLAUDE_PLUGIN_ROOT }; if (-not $r) { exit 0 }; $n = $null; foreach ($c in @(\\\"$env:ProgramFiles\\nodejs\\node.exe\\\", \\\"${env:ProgramFiles(x86)}\\nodejs\\node.exe\\\")) { if (Test-Path $c) { $n = $c; break } }; if (-not $n) { exit 0 }; & $n \\\"$r\\hooks\\session-state-injector.js\\\"\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'r=\"$PLUGIN_ROOT\"; [ -n \"$r\" ] || r=\"$CLAUDE_PLUGIN_ROOT\"; [ -n \"$r\" ] || exit 0; n=\"$(command -v node 2>/dev/null)\"; [ -n \"$n\" ] || { for c in \"$NVM_BIN/node\" \"$HOME\"/.nvm/versions/node/*/bin/node /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do [ -x \"$c\" ] && { n=\"$c\"; break; }; done; }; [ -n \"$n\" ] || exit 0; exec \"$n\" \"$r/hooks/read-only-guard.js\"'",
+            "commandWindows": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -Command \"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $r = $env:PLUGIN_ROOT; if (-not $r) { $r = $env:CLAUDE_PLUGIN_ROOT }; if (-not $r) { exit 0 }; $n = $null; foreach ($c in @(\\\"$env:ProgramFiles\\nodejs\\node.exe\\\", \\\"${env:ProgramFiles(x86)}\\nodejs\\node.exe\\\")) { if (Test-Path $c) { $n = $c; break } }; if (-not $n) { exit 0 }; & $n \\\"$r\\hooks\\read-only-guard.js\\\"\""
           }
         ]
       }
