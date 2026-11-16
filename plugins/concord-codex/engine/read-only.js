@@ -87,14 +87,17 @@ function pathInside(p, realDir) {
   return typeof p === 'string' && !hasDotDot(p) && within(p, realDir);
 }
 
-// A segment that could match "..": with "[" and "]" removed, two characters each "." or "?",
-// or anything containing "..". Classes like [.] and escapes like \. spell ".." without writing it.
+const GLOB_META = /[*?[\]!+@]/;
+
+// A segment that could name "..". A literal segment (no glob metacharacter) only if it is "..".
+// A wildcard segment that starts with "." or "[" is denied, whatever a matcher makes of a class
+// or an escape there ([.], [!a], [[:punct:]], \.). A wildcard segment that starts with "*" or "?"
+// is allowed: glob matchers do not let "*" or "?" match a leading dot by default.
 function mayBeDotDot(seg) {
-  const s = seg.replace(/[[\]]/g, '');
-  return /^[.?]{2}$/.test(s) || s.includes('..');
+  return GLOB_META.test(seg) ? /^[.[]/.test(seg) : seg === '..';
 }
 
-// A glob pattern is allowed when it is relative, has no backslash, no segment that could match
+// A glob pattern is allowed when it is relative, has no backslash, no segment that could name
 // "..", no brace or group alternatives and no "~" (each can hide an outside location), and its
 // literal leading segments, resolved under base, stay inside realDir (a symlink there may leave it).
 function patternInside(pattern, base, realDir) {
@@ -102,8 +105,8 @@ function patternInside(pattern, base, realDir) {
   if (pattern.split('/').some(mayBeDotDot)) return false;
   if (/[{}()]/.test(pattern) || pattern.startsWith('~')) return false;
   const literal = [];
-  for (const seg of pattern.split(/[\\/]/)) {
-    if (/[*?[\]!+@]/.test(seg)) break;
+  for (const seg of pattern.split('/')) {
+    if (GLOB_META.test(seg)) break;
     literal.push(seg);
   }
   return within(path.join(base, ...literal), realDir);

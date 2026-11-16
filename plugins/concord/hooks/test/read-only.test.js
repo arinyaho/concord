@@ -190,5 +190,13 @@ test('decideClaude: every Glob pattern it allows stays inside the prepared direc
     }
   }
   for (const p of ['**/*.js', 'src/**/*.ts', '*.[jt]s', 'head/**/*.ts']) assert.ok(allowed.includes(p), p);
-  for (const p of ['[.][.]/[.][.]/outside/*', '\\.\\./\\.\\./outside/*', '?./*', '.?/*', '[.]./*']) assert.ok(!allowed.includes(p), p);
+  for (const p of ['[.][.]/[.][.]/outside/*', '\\.\\./\\.\\./outside/*', '.?/*', '[.]./*']) assert.ok(!allowed.includes(p), p);
+});
+
+test('decideClaude: a wildcard segment starting with "." or "[" is denied, whatever the matcher; a literal one is not', () => {
+  const { dir } = prepared();
+  const o = { preparedDir: dir, allowedTools: [] };
+  const allow = (pattern) => ro.decideClaude(ev('Glob', { pattern, path: dir }), o).allow;
+  for (const p of ['[.a][.a]/*', '.[!a]/*', '.[^a]/*', '.[[:punct:]]/*', '../*', 'head/../x']) assert.equal(allow(p), false, p);
+  for (const p of ['.github/**', '**/*.js', '*.[jt]s', 'head/.config/*.json']) assert.equal(allow(p), true, p);
 });
