@@ -1,6 +1,6 @@
 # Installed script locator
 
-A skill whose commands run across hours or days cannot keep a script path it resolved once: a plugin updater removes the previous version directory while the skill waits. `review-until-approve` therefore resolves its `scripts/` directory again before every command, with one locator command written in its skill text, and its scheduled job's launcher resolves it again at every run. This document defines which installed copy the locator selects.
+A skill whose commands run across hours or days cannot keep a script path it resolved once: a plugin updater removes the previous version directory while the skill waits. `review-until-approve` therefore resolves its `scripts/` directory again before every command, with one locator command written in its skill text, and its background watcher resolves it again before every check and round. This document defines which installed copy the locator selects.
 
 ## Decision
 

@@ -19,10 +19,10 @@ Concord keeps no store of its own that decides anything. A workflow that needs t
 These kinds of local file are allowed. None records the state of the work, and each decides only what its entry says:
 
 - **Working documents.** A coordinating session keeps one state document (the user's standing authorizations with their words and dates, the list of work units and their pull requests, and lessons) and receives worker reports as files. They are plain Markdown, written and read by agents. The progress and decisions in them are also on the ticket. Deleting them loses convenience and the record of standing authorizations; a successor then asks the user again.
-- **Notice records.** A polling script may keep a file of the notices it has already printed, so that it does not print them twice, and a scheduled job may record when it last ran, so that a stopped job is reported. Deleting the file causes a repeated or delayed notice and nothing else. No script reads such a file to decide whether a pull request merges or a review passes.
+- **Notice records.** A polling script may keep a file of the notices it has already printed, so that it does not print them twice, and a background watcher may record when it last checked, so that a stopped one is reported. Deleting the file causes a repeated or delayed notice and nothing else. No script reads such a file to decide whether a pull request merges or a review passes.
 - **Locks.** A script may keep a lock file so that two runs do not work on the same thing at once. A lock decides only whether a run may start, and a run takes one over only when its holder is not running. Deleting one lets two runs overlap.
 - **Configuration the user writes.** For example the options of a scheduled run. It decides what the user wrote it to decide, which can include an authorization such as merging. No workflow writes it.
-- **Watch lists.** `review-until-approve` keeps the pull requests its scheduled watch checks, each with the account, harness, model, and effort to use, adding one when the user invokes the skill on it and removing one when the user stops it or it is merged or closed. It decides only which pull requests are checked and how a round's agents start. Deleting it stops the checks; invoking the skill on a pull request adds it again.
+- **Watch lists.** `review-until-approve` keeps the pull requests its background watcher checks, each with the account, harness, model, and effort to use, adding one when the user invokes the skill on it and removing one when the user stops it or it is merged or closed. It decides only which pull requests are checked and how a round's agents start. The watcher exits when it is empty. Deleting it stops the checks; invoking the skill on a pull request adds it again.
 - **Read-only modes.** A file per session that names the one directory the session may read and, for a confined agent, the one file it may write. It decides only what that session's tools may do.
 - **Logs.** Output kept for a person to read, such as the GitHub messages a polling script does not print. The session does not read them, and they decide nothing.
 
@@ -48,7 +48,7 @@ Every other obstacle is recorded and the work continues. The table gives the beh
 | A blocker finding remains after the fixes | Leave the pull request as a draft, list the finding in its body, and continue with independent work |
 | A worker reaches its context limit | It writes a `handoff` report and a successor continues from it |
 
-A stop names the decision or the item needed, the options, and a recommendation. Work that does not depend on the answer continues while the question is open. A run with no conversation, such as a scheduled one, leaves the question where the user sees it next and continues with work that does not depend on it.
+A stop names the decision or the item needed, the options, and a recommendation. Work that does not depend on the answer continues while the question is open. A run with no conversation, such as a background watcher, leaves the question where the user sees it next and continues with work that does not depend on it.
 
 A workflow has no launch, round, or run budget that it enforces. The procedures are bounded by their text: `review-and-fix` runs one review and at most two rechecks, and a polling script runs to a deadline.
 
