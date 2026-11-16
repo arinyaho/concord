@@ -69,3 +69,9 @@ test('the reader is told not to fork or resume a reading session to act, and how
   assert.match(body, /--checkout <local clone>/);
   assert.match(body, /<unparsed mcp_servers form>/);
 });
+
+test('a changed .gitattributes is core, questions are for the reader to check, and --checkout works for any host', () => {
+  assert.match(body, /A changed `\.gitattributes` is core/);
+  assert.match(body, /Questions for the author[^\n]*for the reader to check[^\n]*not text to post unread/);
+  assert.match(body, /--checkout[^\n]*any host/);
+});

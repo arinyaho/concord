@@ -19,7 +19,8 @@ const OLD = 'a\nb\nc\nd\ne\nf\ng\nh\n';
 function fixture() {
   const repo = gitPr(7, {
     'package-lock.json': '{\n'.repeat(500),
-    '.gitattributes': 'dist/** linguist-generated\n',
+    // The pull request marks its own core file generated; only the merge base's attributes count.
+    '.gitattributes': 'dist/** linguist-generated\nsrc/new.js linguist-generated\n',
     'dist/bundle.js': 'bundled\n'.repeat(300),
     'src/old.js': null,
     'gone.txt': null,
@@ -28,7 +29,7 @@ function fixture() {
     link: { link: outside },
     'sub/inner': { link: '../base.txt' },
     ...Object.fromEntries(Array.from({ length: 96 }, (_, i) => [`f/${i}.txt`, 'x\n'.repeat(i + 2)])),
-  }, { 'src/old.js': OLD, 'gone.txt': 'gone\nfor good\n' });
+  }, { 'src/old.js': OLD, 'gone.txt': 'gone\nfor good\n', '.gitattributes': 'dist/** linguist-generated\n' });
   const w = world({
     login: 'reader',
     pr: {
@@ -59,7 +60,7 @@ function fixture() {
 // The environment of a test run: the fake gh first on PATH, and no harness variables from the process running the tests.
 function env(w, extra) {
   const e = { ...process.env, PATH: `${w.bin}${path.delimiter}${process.env.PATH}` };
-  for (const k of ['CLAUDE_CODE_SESSION_ID', 'EXPLAIN_PR_DIR', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CODEX_THREAD_ID', 'CODEX_SESSION_ID']) delete e[k];
+  for (const k of ['GH_HOST', 'CLAUDE_CODE_SESSION_ID', 'EXPLAIN_PR_DIR', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CODEX_THREAD_ID', 'CODEX_SESSION_ID']) delete e[k];
   // An empty Codex home, so start never reads the config.toml of the user running the tests.
   return { ...e, CODEX_HOME: emptyCodexHome, ...extra };
 }
@@ -129,6 +130,7 @@ test('prepare writes the prepared directory and prints only counts and trackers'
   assert.equal(files.get('package-lock.json').lockfile, true);
   assert.equal(files.get('package-lock.json').additions, 500);
   assert.equal(files.get('dist/bundle.js').generated, true);
+  assert.equal(files.get('.gitattributes').status, 'modified');
   assert.equal(files.get('link').symlink, outside);
   assert.equal(files.get('link').status, 'added');
 
@@ -237,7 +239,7 @@ test('start turns the mode on under Claude Code and prints the reading-session c
   assert.ok(launch.startsWith('codex '), launch);
   for (const part of [
     `'-C' '${real}'`, `'-a' 'never'`, `'-c' 'default_permissions="explain-pr"'`,
-    `'-c' 'permissions.explain-pr.filesystem={":minimal"="read",${JSON.stringify(real)}="read"}'`,
+    `'-c' 'permissions.explain-pr.filesystem={":minimal"="read",${JSON.stringify(real)}="read","/tmp"="none"}'`,
     `'-c' 'web_search="disabled"'`, `'--disable' 'apps'`, `'--disable' 'browser_use'`, `'--disable' 'computer_use'`,
     `'--disable' 'multi_agent'`, `'--disable' 'image_generation'`, `'-c' 'shell_environment_policy.inherit="core"'`,
     `'-c' 'mcp_servers.atlassian.tools.getJiraIssue.approval_mode="approve"'`,
@@ -351,4 +353,29 @@ test('under Codex, mcp_servers forms that are not [mcp_servers.<id>] headers are
     assert.deepEqual(r.json.skippedServers, [UNPARSED], form);
     assert.ok(r.json.launch.includes('mcp_servers.github.enabled=false'), form);
   }
+});
+
+test('under Codex, a listed tool is matched to the longest configured server id it starts with', () => {
+  const { repo, w, data } = fixture();
+  const dir = run(w, ['prepare', 'acme/app', '7', '--checkout', repo.checkout], { EXPLAIN_PR_DIR: data }).json.dir;
+  run(w, ['allow', 'jira', 'mcp__my__srv__get_issue'], { EXPLAIN_PR_DIR: data });
+  const home = tempDir('xpr-codex-ids-');
+  fs.writeFileSync(path.join(home, 'config.toml'), '[mcp_servers.my]\ncommand = "a"\n[mcp_servers.my__srv]\ncommand = "b"\n');
+  const r = run(w, ['start', dir], { EXPLAIN_PR_DIR: data, CODEX_HOME: home });
+  assert.equal(r.status, 0, r.stderr);
+  const parsed = spawnSync('sh', ['-c', `printf '%s\\n' ${r.json.launch.replace(/^codex /, '')}`], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+  const mcp = parsed.filter((a, i) => parsed[i - 1] === '-c' && a.startsWith('mcp_servers.'));
+  assert.deepEqual(mcp, ['mcp_servers.my.enabled=false', 'mcp_servers.my__srv.tools.get_issue.approval_mode="approve"']);
+});
+
+test('prepare without --checkout fetches from the host gh uses (GH_HOST)', () => {
+  const { repo, w, data } = fixture();
+  const r = run(w, ['prepare', 'acme/app', '7'], {
+    EXPLAIN_PR_DIR: data, GH_HOST: 'ghe.example.com',
+    GIT_CONFIG_COUNT: '2',
+    GIT_CONFIG_KEY_0: `url.file://${repo.bare}.insteadOf`, GIT_CONFIG_VALUE_0: 'https://ghe.example.com/acme/app.git',
+    GIT_CONFIG_KEY_1: `url.file://${path.join(repo.bare, 'missing')}.insteadOf`, GIT_CONFIG_VALUE_1: 'https://github.com/acme/app.git',
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(fs.readFileSync(path.join(r.json.dir, 'head', 'src', 'new.js'), 'utf8'), `${OLD}i\nj\n`);
 });

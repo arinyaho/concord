@@ -169,7 +169,7 @@ function prepare(args) {
       run('git', ['-C', checkout, 'fetch', '-q', 'origin', head, mergeBase]);
       const objects = run('git', ['-C', checkout, 'rev-parse', '--path-format=absolute', '--git-path', 'objects']).trim();
       fs.writeFileSync(path.join(gitDir, 'objects', 'info', 'alternates'), `${objects}\n`);
-    } else git('fetch', '-q', '--depth', '1', `https://github.com/${repo}.git`, head, mergeBase);
+    } else git('fetch', '-q', '--depth', '1', `https://${process.env.GH_HOST || 'github.com'}/${repo}.git`, head, mergeBase);
     // Every file goes into head/ as committed, whatever export-ignore or export-subst the tree's .gitattributes set.
     fs.writeFileSync(path.join(gitDir, 'info', 'attributes'), '* -export-ignore -export-subst\n');
     step = 'write the diff';
@@ -201,7 +201,8 @@ function prepare(args) {
     run('tar', ['-xf', path.join(gitDir, 'head.tar'), '-C', path.join(tmp, 'head')]);
     const symlinks = removeSymlinks(path.join(tmp, 'head'));
     write('symlinks.json', symlinks);
-    const attrs = run('git', ['-C', gitDir, 'check-attr', '-z', '--stdin', '--source', head, 'linguist-generated'], { input: changed.map((f) => f.path).join('\0') }).split('\0');
+    // `generated` follows the merge base's .gitattributes: the pull request cannot move its own files out of the core.
+    const attrs = run('git', ['-C', gitDir, 'check-attr', '-z', '--stdin', '--source', mergeBase, 'linguist-generated'], { input: changed.map((f) => f.path).join('\0') }).split('\0');
     const generated = new Set();
     for (let i = 0; i + 2 < attrs.length; i += 3) if (['set', 'true'].includes(attrs[i + 2])) generated.add(attrs[i]);
 
@@ -256,7 +257,8 @@ function allow([tracker, ...tools]) {
 
 const shq = (a) => `'${a.replace(/'/g, "'\\''")}'`;
 // The Codex reading session: reads confined to the prepared directory by a permissions profile (not -s, which would
-// force the legacy sandbox), no approval prompts, no web search, no apps connector. The listed MCP tools are approved
+// force the legacy sandbox), with /tmp denied (the minimal system paths leave it readable and writable; an agent the
+// session spawns runs under the same profile), no approval prompts, no web search, no apps connector. The listed MCP tools are approved
 // in advance, since `-a never` refuses a call that needs approval; a listed tool that is not mcp__<server>__<tool> with
 // both names bare TOML keys gets no switch and is returned in skippedTools. Every MCP server of the user's config.toml that hosts no listed tool is disabled, so a
 // server the user approved in advance cannot act in a session whose hook the user has not trusted; an id that is not a
@@ -289,24 +291,29 @@ function configuredServers() {
   return [...ids].filter((id) => id !== UNPARSED).concat(ids.has(UNPARSED) ? [UNPARSED] : []);
 }
 function launchCommand(dir) {
+  const servers = configuredServers();
+  // A server id may itself contain "__": a tool is matched to the longest configured id it starts with, and split at
+  // the first "__" only when no configured id matches (a server a plugin provides, for one).
+  const ids = servers.filter((id) => BARE.test(id)).sort((a, b) => b.length - a.length);
   const approve = [];
   const skippedTools = [];
   const kept = new Set();
   for (const t of new Set(core.allToolNames(core.readAllowedTools(DATA)))) {
-    const m = /^mcp__([A-Za-z0-9_-]+?)__([A-Za-z0-9_-]+)$/.exec(t);
-    if (m) {
+    const id = ids.find((i) => t.startsWith(`mcp__${i}__`));
+    const m = id ? [t, id, t.slice(`mcp__${id}__`.length)] : /^mcp__([A-Za-z0-9_-]+?)__(.+)$/.exec(t);
+    if (m && BARE.test(m[1]) && BARE.test(m[2])) {
       approve.push('-c', `mcp_servers.${m[1]}.tools.${m[2]}.approval_mode="approve"`);
       kept.add(m[1]);
     } else skippedTools.push(t);
   }
   const disable = [];
   const skippedServers = [];
-  for (const id of configuredServers()) {
+  for (const id of servers) {
     if (id === UNPARSED || !BARE.test(id)) skippedServers.push(id);
     else if (!kept.has(id)) disable.push('-c', `mcp_servers.${id}.enabled=false`);
   }
   const args = ['-C', dir, '-a', 'never', '-c', 'default_permissions="explain-pr"',
-    '-c', `permissions.explain-pr.filesystem={":minimal"="read",${JSON.stringify(dir)}="read"}`,
+    '-c', `permissions.explain-pr.filesystem={":minimal"="read",${JSON.stringify(dir)}="read","/tmp"="none"}`,
     '-c', 'web_search="disabled"', '--disable', 'apps', '--disable', 'browser_use', '--disable', 'computer_use',
     '--disable', 'multi_agent', '--disable', 'image_generation', '-c', 'shell_environment_policy.inherit="core"',
     ...disable, ...approve, '$concord:explain-pr Explain the pull request prepared in this directory.'];
