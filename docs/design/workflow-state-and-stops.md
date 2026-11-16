@@ -19,9 +19,9 @@ Concord keeps no store of its own that decides anything. A workflow that needs t
 These kinds of local file are allowed. None records the state of the work, and each decides only what its entry says:
 
 - **Working documents.** A coordinating session keeps one state document (the user's standing authorizations with their words and dates, the list of work units and their pull requests, and lessons) and receives worker reports as files. They are plain Markdown, written and read by agents. The progress and decisions in them are also on the ticket. Deleting them loses convenience and the record of standing authorizations; a successor then asks the user again.
-- **Notice records.** A polling script may keep a file of the notices it has already printed, so that it does not print them twice. Deleting the file causes a repeated notice and nothing else. No script reads such a file to decide whether a pull request merges or a review passes.
+- **Notice records.** A polling script may keep a file of the notices it has already printed, so that it does not print them twice, and a background watcher may keep the notices not yet shown to the user and when it last checked, so that a stopped one is reported. Deleting the file causes a repeated or delayed notice, and for `pr-to-merge` possibly a repeated review request, and nothing else. No script reads such a file to decide whether a pull request merges or a review passes.
 - **Locks.** A script may keep a lock file so that two runs do not work on the same thing at once. A lock decides only whether a run may start, and a run takes one over only when its holder is not running. Deleting one lets two runs overlap.
-- **Configuration the user writes.** For example the options of a scheduled run. It decides what the user wrote it to decide, which can include an authorization such as merging. No workflow writes it.
+- **Watch lists.** `pr-to-merge` keeps the repositories its background watcher checks, each with the options of the invocation, including whether merging is authorized there. The skill writes an entry from the user's words, and a check removes one with nothing left to watch. It decides which pull requests are acted on and whether they may merge. Deleting it stops the checks; invoking the skill adds the entry again.
 - **Logs.** Output kept for a person to read, such as the GitHub messages a polling script does not print. The session does not read them, and they decide nothing.
 
 Minor points that a workflow does not fix are collected into one follow-up ticket in the project's tracker. `pr-to-merge` files none: a minor point it does not fix on the user's own pull request is listed in its reply and in its report to the user.
@@ -46,9 +46,9 @@ Every other obstacle is recorded and the work continues. The table gives the beh
 | A blocker finding remains after the fixes | Leave the pull request as a draft, list the finding in its body, and continue with independent work |
 | A worker reaches its context limit | It writes a `handoff` report and a successor continues from it |
 
-A stop names the decision or the item needed, the options, and a recommendation. Work that does not depend on the answer continues while the question is open.
+A stop names the decision or the item needed, the options, and a recommendation. Work that does not depend on the answer continues while the question is open. A run with no conversation, such as a background watcher or the headless session it starts, leaves the question where the user sees it next and continues with work that does not depend on it.
 
-A workflow has no launch, round, or run budget that it enforces. The procedures are bounded by their text: `review-and-fix` runs one review and at most two rechecks, and a polling script runs to a deadline.
+A workflow has no launch, round, or run budget that it enforces. The procedures are bounded by their text: `review-and-fix` runs one review and at most two rechecks, and a background watcher runs until nothing is left to watch.
 
 ## What is code
 
@@ -60,7 +60,7 @@ A step is code when a model gets it wrong under repetition or when it should cos
 
 Everything else is skill text: the order of stages, what a review request contains, how to answer a review thread, when to file a follow-up ticket.
 
-Each script is one file, reads the live state from GitHub and git on every run, and depends only on Node, `gh`, and `git`. A script prints what it did and what it could not decide, one line per event, and exits. It does not print instructions for the model to obey, and it does not refuse to run because of what an earlier run recorded.
+Each script is one file, reads the live state from GitHub and git on every run, and depends only on Node, `gh`, and `git`. A script prints what it did and what it could not decide, one line per event, and exits; a background watcher records such lines for the user instead. It does not print instructions for the model to obey, and it does not refuse to run because of what an earlier run recorded.
 
 ## Workers
 
@@ -81,7 +81,7 @@ The user can authorize a kind of action once for a run, such as "merge approved 
 
 The coordinating session also copies each authorization to the tracking ticket as a decision record, for people to read. No workflow reads a ticket or a comment back as an authorization, because other people can write there.
 
-A scheduled run has no conversation with the user. Its authorization is the configuration the user writes for it, which is the one other place an authorization is read from.
+A background watcher has no conversation with the user. `pr-to-merge`'s watcher reads the merge authorization from its watch list, where the skill records it only from the user's words in the invocation or from a standing authorization the coordinating session recorded. That is the one other place an authorization is read from.
 
 An authorization covers the kind of action and the repositories the user named, and nothing wider.
 
@@ -95,7 +95,7 @@ The workflows run on Claude Code and Codex. A workflow uses the harness's own ag
 
 **A rule that fails closed on procedure moves the cost to the user.** When a procedural failure ends the run, the user must return, read an error about Concord's internals, and authorize a continuation. Under a session goal this ends the goal. The stop rule keeps the user's attention for the three cases that need it.
 
-**An authorization is read only from a place that only the user's words reach.** The user's conversation with the coordinating session is the one channel other people cannot write to, and the state document carries those words to a successor. A scheduled run's configuration is the exception, and the user owns it: the user writes it, and it lives on the user's machine. A ticket and a pull request accept text from anyone with access, so an authorization read back from them could be one that no user gave.
+**An authorization is read only from a place that only the user's words reach.** The user's conversation with the coordinating session is the one channel other people cannot write to, and the state document carries those words to a successor. `pr-to-merge`'s watch list is the exception: the skill writes an authorization into it only from those words, and it lives on the user's machine. A ticket and a pull request accept text from anyone with access, so an authorization read back from them could be one that no user gave.
 
 **Subagents keep the decision in one place.** Separate sessions are peers: each can defer to another, and an instruction that names one of them the coordinator does not bind the others. A subagent returns its result to the session that started it and ends, so there is one place where decisions are taken. The two things separate sessions offered are obtained otherwise: a `handoff` report carries work across a context limit, and worktrees separate parallel work.
 

@@ -1,6 +1,6 @@
 # Installed script locator
 
-A skill whose commands run across hours or days cannot keep a script path it resolved once: the Codex updater removes the previous version directory while the skill waits. `review-until-approve` therefore resolves its `scripts/` directory again before every command, with one locator command written in its skill text. This document defines which installed copy the locator selects.
+A skill whose commands run across hours or days cannot keep a script path it resolved once: the Codex updater removes the previous version directory while the skill waits. `review-until-approve` therefore resolves its `scripts/` directory again before every command, with one locator command written in its skill text, and `pr-to-merge`'s background watcher resolves `scripts/pr-to-merge.js` the same way before every check. This document defines which installed copy the locator selects.
 
 ## Decision
 
