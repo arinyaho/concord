@@ -1,0 +1,14 @@
+{
+  "session_id": "01a1e2b3-c023-7ff2-97cf-832eb8aec348",
+  "turn_id": "01a1e2b3-c286-7e01-ac00-9963fb63144b",
+  "transcript_path": "/home/user/.codex/sessions/2026/11/16/rollout-2026-11-16T13-53-13-01a1e2b3-c023-7ff2-97cf-832eb8aec348.jsonl",
+  "cwd": "/work/repo",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "apply_patch",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Update File: /work/repo/a.txt\n@@\n+bye\n*** End Patch"
+  },
+  "tool_use_id": "exec-0c492a3c-b7aa-4262-8cd2-bcefd7eb2328"
+}

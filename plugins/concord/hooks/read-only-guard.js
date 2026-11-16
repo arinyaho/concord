@@ -6,7 +6,7 @@ const { readMode, readAllowedTools, allToolNames, decideClaude } = require('../c
 
 try {
   const event = JSON.parse(fs.readFileSync(0, 'utf8'));
-  const dir = dataDir();
+  const dir = dataDir(process.env, 'claude');
   const preparedDir = typeof event.session_id === 'string' ? readMode(dir, event.session_id) : null;
   if (preparedDir) {
     const decision = decideClaude(event, { preparedDir, allowedTools: allToolNames(readAllowedTools(dir)) });

@@ -90,12 +90,21 @@ test('Codex hook manifest gives every command hook the PATH-independent node-dis
         ],
       },
     ],
+    PreToolUse: [
+      {
+        matcher: '*',
+        hooks: [
+          { type: 'command', command: codexLauncherCommand('read-only-guard.js'), commandWindows: codexLauncherCommandWindows('read-only-guard.js') },
+        ],
+      },
+    ],
   });
 });
 
 for (const [hookEvent, hookIndex, label] of [
   ['Stop', 0, 'Stop'],
   ['SessionStart', 0, 'SessionStart state injector'],
+  ['PreToolUse', 0, 'PreToolUse read-only guard'],
 ]) {
 test(`Codex ${label} launcher uses PLUGIN_ROOT when provided`, (t) => {
   const project = tempDir('concord-codex-launcher-project-');
@@ -194,6 +203,7 @@ function runCodexLauncherScrubbed({ hookEvent, hookIndex = 0, cwd, home, env }) 
 for (const [hookEvent, hookIndex, label] of [
   ['Stop', 0, 'Stop'],
   ['SessionStart', 0, 'SessionStart state injector'],
+  ['PreToolUse', 0, 'PreToolUse read-only guard'],
 ]) {
 test(`Codex ${label} launcher discovers node off a scrubbed PATH`, (t) => {
   const project = tempDir('concord-codex-scrubbed-project-');

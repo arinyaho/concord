@@ -122,7 +122,9 @@ test('decideCodex: outside prsRoot allows everything; inside denies patches, unl
   assert.deepEqual(ro.decideCodex({ tool_name: 'apply_patch', ...inn }, o), { allow: false, reason: ro.DENY_REASON(prsRoot) });
   assert.equal(ro.decideCodex({ tool_name: 'mcp__a__b', ...inn }, o).allow, false);
   assert.equal(ro.decideCodex({ tool_name: 'mcp__a__ok', ...inn }, o).allow, true);
-  for (const n of ['shell', 'exec_command', 'local_shell']) assert.equal(ro.decideCodex({ tool_name: n, ...inn }, o).allow, true, n);
+  // Codex names every shell call, unified exec included, `Bash` (captured from codex-cli 0.167).
+  assert.equal(ro.decideCodex({ tool_name: 'Bash', ...inn }, o).allow, true);
+  assert.equal(ro.decideCodex({ tool_name: 'exec_command', ...inn }, o).allow, false);
   assert.equal(ro.decideCodex({ tool_name: 'update_plan', ...inn }, o).allow, false);
   assert.equal(ro.decideCodex({ tool_name: 'apply_patch' }, o).allow, true);
 });

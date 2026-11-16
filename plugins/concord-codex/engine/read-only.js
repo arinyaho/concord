@@ -2,7 +2,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SHELL_TOOLS = new Set(['shell', 'exec_command', 'local_shell']);
+// Codex's PreToolUse names every shell call, unified exec included, `Bash`.
+const SHELL_TOOLS = new Set(['Bash']);
 
 function DENY_REASON(dir) {
   return `explain-pr read-only mode: only reading ${dir} and the tools in allowed-tools.json are allowed. /clear or a new session ends the mode.`;

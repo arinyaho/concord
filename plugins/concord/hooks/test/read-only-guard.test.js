@@ -55,6 +55,20 @@ test('malformed stdin prints nothing and exits 0', () => {
   assert.deepEqual(run(dir, 'not json'), { stdout: '', status: 0 });
 });
 
+test('the hook reads the Claude Code data directory even when the session id is not in its environment', () => {
+  const base = tempDir('rog-cfg-');
+  const dir = path.join(base, 'concord', 'explain-pr');
+  const prepared = path.join(dir, 'prs', 'p');
+  fs.mkdirSync(prepared, { recursive: true });
+  fs.mkdirSync(path.join(dir, 'modes'));
+  fs.writeFileSync(path.join(dir, 'modes', 'A'), `${fs.realpathSync(prepared)}\n`);
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: base, CODEX_HOME: tempDir('rog-codex-') };
+  delete env.EXPLAIN_PR_DIR;
+  delete env.CLAUDE_CODE_SESSION_ID;
+  const r = spawnSync('node', [HOOK], { input: bash('A'), encoding: 'utf8', env });
+  assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny');
+});
+
 test('hooks.json registers the guard on every PreToolUse', () => {
   const hooks = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'hooks.json'), 'utf8')).hooks;
   const entry = hooks.PreToolUse.find((e) => e.matcher === '*');

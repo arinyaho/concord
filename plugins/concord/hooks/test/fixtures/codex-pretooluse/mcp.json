@@ -1,0 +1,14 @@
+{
+  "session_id": "01a1e2b3-c023-7ff2-97cf-832eb8aec348",
+  "turn_id": "01a1e2b3-c286-7e01-ac00-9963fb63144b",
+  "transcript_path": "/home/user/.codex/sessions/2026/11/16/rollout-2026-11-16T13-53-13-01a1e2b3-c023-7ff2-97cf-832eb8aec348.jsonl",
+  "cwd": "/work/repo",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "mcp__probe__echo",
+  "tool_input": {
+    "text": "hello"
+  },
+  "tool_use_id": "exec-263cc47a-2440-4d67-ac76-fcb473843325"
+}
