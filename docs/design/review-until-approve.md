@@ -7,14 +7,14 @@ The decisions:
 - **State lives on the pull request.** Markers in the skill's own reviews and comments hold every finding and its status. A new session, another machine, or a reinstalled plugin resumes from the pull request alone.
 - **Every pull request is untrusted.** The reviewer and the verifier can read only the round's directory and write only their own output file. No session that holds the user's credentials reads the pull request's content.
 - **Waiting costs no model call.** A detached background watcher checks the pull requests every five minutes with `gh` and runs a round only when something happened.
-- **The user's view is an input.** The user's notes go to both agents. What the code settles is handled with a quote from the code as evidence; what turns on judgment goes to the user. Only the user waives a finding or changes its class.
-- **The skill approves when nothing blocks**, and changes nothing outside the pull request's reviews, its own threads, the comments recording the user's notes and decisions, and its own `review-blocked` label.
+- **The user's view is an input.** The user's notes, kept private to the reviewing account, go to both agents. What the code settles is handled with a quote from the code as evidence; what turns on judgment goes to the user. Only the user waives a finding or changes its class.
+- **The skill approves when nothing blocks**, and changes nothing outside the pull request's reviews, its own threads, the comments recording the user's decisions, and its own `review-blocked` label.
 
 Invoking the skill on a pull request authorizes every review it posts there, the approval included, the changes to `review-blocked`, and starting the watcher.
 
 ## Roles
 
-- **The user's session** runs the scripts, relays their output (counts, keys, hashes, links, a fixed vocabulary), posts the notes and decisions the user gives in their own words, and asks the questions the scripts report. It never reads the pull request's content, the round directory, or the agents' files; the user reads findings on the pull request.
+- **The user's session** runs the scripts, relays their output (counts, keys, hashes, links, a fixed vocabulary), saves the notes and posts the decisions the user gives in their own words, and asks the questions the scripts report. It never reads the pull request's content, the round directory, or the agents' files; the user reads findings on the pull request.
 - **The round script** runs a round without a model: it prepares the round directory, runs the two agents in turn, checks the verifier's list, and publishes.
 - **The reviewer** reads the request and the files it names, in a fresh context, and writes the result file.
 - **The verifier** then reads the request, the result file, and the checkout, refutes what it can, and writes the verified list.
@@ -38,31 +38,37 @@ The skill keeps no ledger. Markers are HTML comments starting `review-until-appr
 
 | Where | Marker | Carries |
 |---|---|---|
-| Last line of each review | `…:state` | Round, reviewed head, diff base, description hash, notes used, language, submodule decisions, and every finding's key, class (`blocker`, `minor`), status, file, line, and raising and closing heads |
+| Last line of each review | `…:state` | Round, reviewed head, diff base, description hash, hash of the notes used, language, submodule decisions, and every finding's key, class (`blocker`, `minor`), status, file, line, and raising and closing heads |
 | First line of a finding thread | `…:finding <key>` | The key |
 | First line of a reply | `…:reply <key> <status> <head>` | So each reply is posted once |
-| First line of a notes comment | `…:notes` | Hash of the notes that follow |
 | First line of a decision comment | `…:decision` | Key and decision; the text gives the reason |
 
 A key is `<round>.<index>`. Statuses: `open`; `fixed` (the verifier confirmed the defect is gone at the closing head); `answered` (a reply proves the finding wrong, shown by a quote from the head); `asked` (waits for the user); `waived` (by the user).
 
-- **Reading.** The account's newest state review, its later decisions in order, and its newest notes comment, plus the live threads, comments, head, description, draft status, and whether the account approved the head (a dismissed approval counts).
+- **Reading.** The account's newest state review, and its later decisions in order, plus the live threads, comments, head, description, draft status, and whether the account approved the head (a dismissed approval counts).
 - **Whose comments count.** Only the reviewing account's, with the marker at its fixed position. Two accounts have separate states.
-- **Pending.** A head that is not the reviewed head; a reply, newer than the state review, from the author or an account with write access, in a finding thread or the conversation; a description whose hash changed; notes newer than those the state names.
-- **Edits.** The skill never edits what it posted. A counting item GitHub reports as edited, an unparsable state, or a decision naming an unknown key makes the state unreadable: nothing is approved, and the next round is broad with no prior findings and says so. An edited notes comment stops rounds until the user gives the notes again. A deleted finding comment loses only its thread; the finding stays in the state.
+- **Pending.** A head that is not the reviewed head; a reply, newer than the state review, from the author or an account with write access, in a finding thread or the conversation; a description whose hash changed; notes whose hash differs from the state's.
+- **Edits.** The skill never edits what it posted. A counting item GitHub reports as edited, an unparsable state, or a decision naming an unknown key makes the state unreadable: nothing is approved, and the next round is broad with no prior findings and says so. A deleted finding comment loses only its thread; the finding stays in the state.
 
 ## The user's notes
 
-Where the notes are stored is open; this section describes them as stored on the pull request.
+The notes are the user's view ("approach X is fine", what worries them, what not to flag), given at invocation or later in the user's own session. The session writes them from the user's words alone and saves them with `notes`; the script is the only writer, and the agents, which have no token and no network, only read the copy in the round's requests, where they are the user's instruction, apart from the round's data. Each save holds the complete set. Changed notes are pending and start a broad round.
 
-The notes are the user's view ("approach X is fine", what worries them, what not to flag), given at invocation or later in the user's own session. The session writes them from the user's words alone and posts the exact text with `notes` only after the user agrees; each notes comment holds the complete set. Both requests carry them as the user's instruction, apart from the round's data. Changed notes are pending and start a broad round.
+**Where they are kept.** In one of two stores the user chooses; neither is a default. The first time the skill needs to store notes and the per-user configuration names no store, the session asks once: a secret gist (no setup) or a private repository the user owns (given as `OWNER/NAME`). The answer is recorded as `notes.store` (`gist`, or `repo: OWNER/NAME`) and used from then on; the user can change it later. Until the user has chosen, notes stay in the local cache and rounds still use them.
+
+- **Gist.** A secret gist of the reviewing account per pull request, described `concord review notes: OWNER/REPO#N`, found on any machine by listing the account's gists and matching the description. It needs the `gist` scope on the `gh` token, which `gh auth login` grants by default; without it the script says so and keeps the notes local.
+- **Private repository.** The file `OWNER/REPO/N.md` in the chosen repository, written through the contents API. The script checks that the repository is private before every write, refuses one that is not, and never creates one.
+
+With either store, the copy in the per-user state directory is a cache only, and a round on another machine reads the same notes as it reads the same state.
+
+**The location is never written anywhere else**: not in a review, comment, marker, log, or script output. A secret gist is unlisted, unsearchable, and has a random id, so this rule is its protection; no review or reply quotes the notes either.
 
 The verifier weighs each finding against the notes:
 
 | The finding | Outcome |
 |---|---|
 | Minor, and under a note that says not to flag it | Not published; the body gives the count |
-| Conflicts with a note, and a span quoted from the head settles which side holds | Published with the quote and the note it contradicts, or, if the note holds, listed under "Checked against the notes" with the quote |
+| Conflicts with a note, and a span quoted from the head settles which side holds | Published with the quote if the finding holds; listed with the quote under "Set aside by the reviewer's notes" if the note holds |
 | Conflicts with a note on judgment (trade-off, priority, anything the code cannot show) | Published as `asked` under "For the reviewer to decide" |
 
 A blocker is never set aside by a "do not flag" note; that conflict is judgment.
@@ -75,7 +81,7 @@ For each open finding with a pending reply, the verifier gives one verdict: `fix
 
 ## Asking the user
 
-The questions: an `asked` finding, an unreviewed submodule range, an agent that cannot start, a hook that did not run, unreadable notes, and a `gh` account that differs from the watch entry's. In a session, the script prints a fixed line with keys and a link, and the session asks. The watcher has no session: it sends a system notification (Notification Center, `notify-send` where installed, a PowerShell toast) and adds the line to its notice list, which the plugin's `SessionStart` hook prints at every session start until answered. Neither carries text from the pull request.
+The questions: an `asked` finding, an unreviewed submodule range, an agent that cannot start, a hook that did not run, a notes store the script cannot use, and a `gh` account that differs from the watch entry's. In a session, the script prints a fixed line with keys and a link, and the session asks. The watcher has no session: it sends a system notification (Notification Center, `notify-send` where installed, a PowerShell toast) and adds the line to its notice list, which the plugin's `SessionStart` hook prints at every session start until answered. Neither carries text from the pull request.
 
 The user reads the finding on the pull request and answers in a session. `decide` takes the key, the decision (keep, waive, `blocker`, `minor`), and the reason from its command line only, posts the decision, approves when the condition holds, and sets the label.
 
@@ -93,7 +99,7 @@ A round runs when the pull request has none yet, when the watcher sees an event,
 4. **Review.** Findings (severity, file, line, verbatim quote, reason, evidence), prior verdicts, Unverified, Covered. A round started only by thread replies asks only about those findings.
 5. **Verification.** Each candidate is kept or rejected and weighed against the notes. A kept one gets a class (`blocker` for a holding `blocker` or `should-fix`, else `minor`), a verbatim span, and its text, with the reason when the class differs from the reviewer's severity. Each open finding gets a verdict and reply text; a closed finding raised again and confirmed reopens.
 6. **Checks.** The list must parse; prior keys must exist; every span must occur at the head; the text must pass the scan. A failing list is not published. A kept finding whose span is missing goes in the body.
-7. **Publishing.** Findings whose span lies in a diff hunk become line comments; the rest go in the body with file and line. The body lists new findings by class, "For the reviewer to decide", "Fixed", "Answered", and "Still open" by key with thread links, "Checked against the notes", Unverified, and the state marker. If the account has a state review newer than the round's start, `publish` posts nothing (`superseded`); otherwise it submits the whole review in one call pinned to the reviewed head, moving line comments into the body once on a position error. It then posts replies (checking their markers), resolves fixed and answered threads, unresolves reopened ones, and keeps `review-blocked` on exactly while an `open` or `asked` blocker remains. GitHub refusals are reported, not retried.
+7. **Publishing.** Findings whose span lies in a diff hunk become line comments; the rest go in the body with file and line. The body lists new findings by class, "For the reviewer to decide", "Fixed", "Answered", and "Still open" by key with thread links, "Set aside by the reviewer's notes", Unverified, and the state marker. If the account has a state review newer than the round's start, `publish` posts nothing (`superseded`); otherwise it submits the whole review in one call pinned to the reviewed head, moving line comments into the body once on a position error. It then posts replies (checking their markers), resolves fixed and answered threads, unresolves reopened ones, and keeps `review-blocked` on exactly while an `open` or `asked` blocker remains. GitHub refusals are reported, not retried.
 8. **Approval.** The review is `APPROVE` exactly when the live head is the reviewed head, the pull request is open and not a draft, the account is not the author, no blocker is `open` or `asked`, every submodule change has a user decision, and the account has not approved this head. Otherwise it is `COMMENT`. Open minors are listed as follow-ups. CI is evidence, not a condition.
 
 The round removes the mode files and the round directory, then frees the lock.
@@ -150,6 +156,7 @@ Only the three stop cases need the user.
 - **The pull request is the record people already read.** A local ledger is a second copy whose disagreements become stops with nothing to decide. A review cannot be deleted, so a full state in each needs no history, and detected edits fail safe.
 - **Any pull request may be hostile**, and a claim that one is safe could come from an injected model. The verifier reads where steering text sits, so it is confined too.
 - **A process per agent** reuses the read-only mode unchanged, allows parallel rounds, needs no orchestrating model, and keeps agents' final messages from every session.
+- **Notes are private to the reviewer** because they are the user's view, not a message to the author; the user chooses between a gist, which needs no setup, and a private repository, which protects by access control rather than by an unguessable URL. Asking once avoids storing anything remote the user did not choose.
 - **The code settles what it can; the user settles judgment.** The quoted span turns "settled" into a script check. Held findings are published so the question sits with the findings.
 - **A detached watcher** costs no model call while waiting (a woken session resends its whole conversation), behaves the same on every operating system, and leaves nothing registered.
 - **Fixed marker positions and escaping** keep agent text from forging state or acting as the user; **one call after a fresh read** publishes each review whole and once; **private material** is read only where its audience matches.
@@ -162,6 +169,8 @@ Only the three stop cases need the user.
 - **Agents as subagents, confined by agent type.** The hook cannot tell rounds apart (one round per machine), relies on the hook naming the agent type, and needs an orchestrating session that reads the agents' messages.
 - **A model session orchestrating rounds, or verifying itself.** A turn per event, and the pull request's text before an unconfined session.
 - **A local ledger or cache; a label or the body as state; replaying markers; markers anywhere; a pending review as a claim.** A second copy with authority; no room, or the author's text; a deleted comment drops a finding; agent text writes state; a draft the user can submit by accident.
+- **Notes as a pull request comment.** GitHub has no private comments, so the author would read them.
+- **Notes kept only locally, or in a synced folder.** Local notes are lost when the user moves machines; a synced folder needs a service the user may not have and the script cannot check.
 - **A held finding kept off the pull request; notes always winning; the skill deciding judgment.** A second place to read; findings the code proves dropped; the user overridden.
 - **A trust declaration, or an unconfined reviewer running tests.** The pull request's code runs near the user's credentials.
 - **More roles; closing on a vanished quote; fetching submodule ranges; a round limit.** Same work in more runs; wrong on unrelated edits; URL and audience checks for a rare case; an arbitrary stop.
@@ -169,7 +178,7 @@ Only the three stop cases need the user.
 ## Residual exposure
 
 - Text that steers both agents can get a pull request approved. The span check bounds what is quoted, not the conclusion; the threads are the record, and `pr-to-merge` does not merge on this approval.
-- Escaping stops markers, mentions, and line-start commands, not misleading prose or links. Notes on the pull request are public to its readers.
+- Escaping stops markers, mentions, and line-start commands, not misleading prose or links. Anyone who learns a notes gist's URL can read it; a private repository store avoids that. A "Set aside" list tells the author that notes exist, not what they say.
 - Two agent runs per event; one reviewer misses what a second would find; rejected findings are not published; runtime claims rest on reading and CI.
 - Public pull requests are not checked against related repositories; on private ones, same-owner material can reach readers the pull request lacks.
 - Claude Code: the hook is the boundary (the log catches one that did not run, not an extension that approves denied calls); the user's own settings and plugins load, and a `CLAUDE.md` in the checkout can load when read beside. Codex: `explain-pr`'s launch limits apply, and the home listing is the agent's own report.
