@@ -27,7 +27,7 @@ No statement by the user lifts these limits. Each agent reads only its round's d
 
 | Harness | How the limits are enforced |
 |---|---|
-| Claude Code | `claude -p` in an empty working directory outside the round directory, with a session id the script chooses and these switches: `--setting-sources` with no source (no user allow rules, hooks, or plugins load); `--settings` registering only the read-only hook; `--permission-mode dontAsk` (whatever nothing allows is refused, not prompted); `--tools Read,Grep,Glob,Write`; `--strict-mcp-config` with no servers; `--no-session-persistence`. Without the hook the agent reads and writes nothing. The script's `explain-pr` mode file for the session id names the round directory, the output file, and a canary path. The hook denies everything until it has denied and logged the agent's first call, a read of the canary path; then it explicitly allows reads in the round directory and the one write. A round whose log lacks the canary denial is discarded |
+| Claude Code | `claude -p` in an empty working directory outside the round directory, with a session id the script chooses and these switches: `--setting-sources` with no source (no user allow rules, hooks, or plugins load); `--settings` registering only the read-only hook; `--permission-mode dontAsk` and `--permission-prompts none` (whatever nothing allows is refused, never prompted); `--tools Read,Grep,Glob,Write`; `--strict-mcp-config` with no servers; `--no-session-persistence`. Without the hook the agent writes nothing, and its round is discarded. The script's `explain-pr` mode file for the session id names the round directory, the output file, and a canary path. The hook denies everything until it has denied and logged the agent's first call, a read of the canary path; then it explicitly allows reads in the round directory and the one write. A round whose log lacks the canary denial is discarded |
 | Codex | `codex exec --ephemeral` (no session files kept) with the launch switches of `explain-pr`'s reading session, the round directory as working directory, and writes allowed only in an output directory that holds the one output file, which the agent writes with a shell command (the Codex hook denies patches). The permissions profile is the boundary and the hook a second line. Before starting the agent, the script runs a listing of the user's home under the same profile, without a model, and starts no agent unless it is refused |
 
 Nothing from the pull request is executed. The checkout is the head's tree as `explain-pr` prepares it (no `.git`, symlinks, or submodules). It is never a working directory, so its settings and hooks do not load; an instruction file inside it (`CLAUDE.md`) can still be loaded by Claude Code when the agent reads files beside it, and is untrusted text like the rest. Diffs are made in the script's own clone with external diff drivers and text conversion off.
@@ -38,7 +38,7 @@ The skill keeps no ledger. Markers are HTML comments starting `review-until-appr
 
 | Where | Marker | Carries |
 |---|---|---|
-| Last line of each review | `…:state` | Round, reviewed head, diff base, description hash, keyed hash of the notes used, language, submodule decisions, and every finding's key, class (`blocker`, `minor`), status, file, line, and raising and closing heads |
+| Last line of each review | `…:state` | Round, whether agents ran, reviewed head, diff base, description hash, keyed hash of the notes used, language, submodule decisions, and every finding's key, class (`blocker`, `minor`), status, file, line, and raising and closing heads |
 | First line of a finding thread | `…:finding <key>` | The key |
 | First line of a reply | `…:reply <key> <status> <head>` | So each reply is posted once |
 | First line of a decision comment | `…:decision` | Key and decision, or the user's ruling on unreadable state; the text gives the reason |
@@ -54,14 +54,14 @@ A key is `<round>.<index>`. Statuses: `open`; `fixed` (the verifier confirmed th
 
 The notes are the user's view ("approach X is fine", worries, what not to flag), given in the user's own session at any time. The session writes them from the user's words alone; `notes` saves the complete set and is their only writer. Agents read them in the requests as the user's instruction, apart from the round's data, and cannot write them. Changed notes are pending and start a broad round.
 
-**Where they are kept.** In one of two stores; neither is a default. The first time notes are stored with no store configured, the session asks: a secret gist (no setup) or a private repository the user owns. The answer is recorded as `notes.store` (`gist` or `repo: OWNER/NAME`) and can be changed later. Until then notes stay in the local cache and rounds use them.
+**Where they are kept.** In one of two stores; neither is a default. The first time notes are stored with no store configured, the session asks: a secret gist (no setup) or a private repository the user owns. The answer is recorded as `notes.store` (`gist` or `repo: OWNER/NAME`) and can be changed later. No round runs with notes that are not in a store: while notes exist only in the local cache (no store chosen, or the store not usable), rounds wait and the user is asked to choose or fix a store.
 
 A machine whose state shows notes it does not hold (a keyed hash, and no store configured or no notes in it) looks for a notes gist by its description; failing that, it asks the user for the store before any round. It never runs a round without the notes, and if neither works it runs nothing.
 
-- **Gist.** A secret gist of the reviewing account per pull request, described `concord review notes: OWNER/REPO#N`, found on any machine by listing the account's gists; of two, the newest is used and the duplicate reported. It needs the `gist` scope, which `gh auth login` grants by default; without it the script says so and keeps the notes local. Notes outlive the pull request until the user deletes them.
+- **Gist.** A secret gist of the reviewing account per pull request, described `concord review notes: OWNER/REPO#N`, found on any machine by listing the account's gists; of two, the newest is used and the duplicate reported. It needs the `gist` scope, which `gh auth login` grants by default; without it the script says so, and rounds wait as above. Notes outlive the pull request until the user deletes them.
 - **Private repository.** The file `OWNER/REPO/N.md` in the chosen repository, written through the contents API. Before every read and write the script checks that the repository's owner is the reviewing account, its visibility is `private` (not `internal`), and it has no collaborator but the owner; it refuses one that fails, and never creates one.
 
-The state marker holds a keyed hash of the notes, never a plain one, so the notes cannot be guessed from it; the key is kept in the notes store beside them. With either store, the copy in the per-user state directory is a cache only, and a round on another machine reads the same notes as it reads the same state.
+The state marker holds a keyed hash of the notes, never a plain one, so the notes cannot be guessed from it; the key always lives in the store with the notes. With either store, the copy in the per-user state directory is a cache only, and a round on another machine reads the same notes as it reads the same state.
 
 **The location is never written anywhere else**: not in a review, comment, marker, log, or script output. A secret gist is unlisted, unsearchable, and has a random id, so this rule is its protection; no review or reply quotes the notes either.
 
@@ -85,7 +85,7 @@ For each open finding with a pending reply, the verifier gives one verdict: `fix
 
 The questions: an `asked` finding, unreadable state, an unreviewed submodule, an agent that cannot start, a hook that did not run, notes not found or a store not usable, the daily cap, and a `gh` account other than the entry's. In a session, the script prints a fixed line with keys and a link and the session asks. The watcher sends a system notification (Notification Center, `notify-send`, a PowerShell toast) and adds the line to a notice list the plugin's `SessionStart` hook prints until it is answered. Neither carries pull request text.
 
-The user reads the finding on the pull request and answers in a session. `decide` takes the key, the decision (keep, waive, `blocker`, `minor`), and the reason from its command line only, posts the decision, approves when the condition holds, and sets the label.
+The user reads the finding on the pull request and answers in a session. `decide` takes, from its command line only, either a key with a decision (keep, waive, `blocker`, `minor`) or the ruling on unreadable state (continue or start over), and the reason. It posts the decision, approves when the condition holds, and sets the label.
 
 ## Text the skill posts
 
@@ -93,7 +93,7 @@ The user reads the finding on the pull request and answers in a session. `decide
 
 ## The round
 
-A round runs when the pull request has none yet, when the watcher sees an event, and when the user invokes the skill while something is pending. A failed round posts nothing, so what was pending stays pending. At most six rounds run per pull request in 24 hours, counted from the state reviews on the pull request; past that the watcher asks the user and runs none until the user invokes the skill.
+A round runs when the pull request has none yet, when the watcher sees an event, and when the user invokes the skill while something is pending. A failed round posts nothing, so what was pending stays pending. At most six rounds run per pull request in 24 hours. The cap counts rounds that ran an agent: published ones from the state reviews, whose marker records that agents ran, and failed ones from a local counter per pull request in the notice record. Base-merge carry-forwards, `ready` publishes, and `decide` approvals do not count. Past the cap the watcher asks the user and runs none until the user invokes the skill.
 
 1. **Lock.** A lock file per pull request and account, created exclusively, records the holder's process id and start time. It is taken over only from a holder that is not running; otherwise the round prints `locked`. Each agent has 30 minutes and an output file of at most 1 MiB; an agent past either is stopped and treated as a malformed output, so no round holds the lock or the watcher longer than four agent runs.
 2. **Inputs.** The checkout, the diff, the description, CI results, prior findings with replies and thread state, and the starting state review; for a private repository only, also closing tickets and the related repositories the project's rules list, of the same owner (otherwise cross-repository consistency is Unverified). The base is the last reviewed head when it is an ancestor of the live head, the merge base is unchanged, and the description and notes are unchanged; otherwise the merge base.
@@ -110,7 +110,7 @@ The round removes the mode files and the round directory, then frees the lock.
 
 **Submodules.** A changed gitlink is listed as unreviewed, blocks approval, and is asked about; a yes is recorded as a decision.
 
-**Size.** When a review body would exceed GitHub's 65,536-character limit, the prose sections shrink to keys and counts first; then findings closed before the previous round leave the state marker, and a later re-raise of one is a new finding.
+**Size.** When a review body would exceed GitHub's 65,536-character limit, the prose sections shrink to keys and counts first; then `fixed` and `answered` findings closed before the previous round, without a user decision, leave the state marker, and a later re-raise of one is a new finding. `waived` findings and every finding with a user decision stay. If the body is still over the limit, the review is a `COMMENT` naming the overflow, it never approves, and the user is asked.
 
 **Language.** A language the user asks for is kept in the state marker; markers, keys, paths, and code are never translated.
 
@@ -122,7 +122,7 @@ The round removes the mode files and the round directory, then frees the lock.
 
 **Watch list.** Invoking the skill adds the pull request to the watch list in the per-user state directory, with the account, harness, model, and effort; an entry is what lets the watcher run rounds, approval included, without the user present, as the invocation authorized. The user's stop removes it, posting nothing, and a merged or closed pull request is removed.
 
-**The watcher.** Invoking the skill starts the watcher unless one is running, from a command outside any harness sandbox, since a process inherits its sandbox for life; where the session cannot run such a command, it prints the command for the user to run in a terminal. A lock file with its process id and start time decides whether one runs. Node's `child_process.spawn` (`detached: true`, `stdio: 'ignore'`, `windowsHide: true`) and `unref()` let it outlive the session and terminal; nothing is registered with the operating system. Every five minutes it runs a check; each check and round runs from the newest installed copy the [state-cli-locator.md](state-cli-locator.md) locator finds. It exits when the list is empty, pauses in sleep, and ends at reboot or logout.
+**The watcher.** Invoking the skill starts the watcher unless one is running, and only outside any harness sandbox, since a process inherits its sandbox for life. Before starting it, the script probes: it writes a file in the per-user state directory and reads the GitHub API. If either fails, it starts nothing and the session prints the command for the user to run in a terminal. A lock file with its process id and start time decides whether one runs. Node's `child_process.spawn` (`detached: true`, `stdio: 'ignore'`, `windowsHide: true`) and `unref()` let it outlive the session and terminal; nothing is registered with the operating system. Every five minutes it runs a check; each check and round runs from the newest installed copy the [state-cli-locator.md](state-cli-locator.md) locator finds. It exits when the list is empty, pauses in sleep, and ends at reboot or logout.
 
 **A check** reads each listed pull request as `state` does. Then:
 
@@ -136,7 +136,7 @@ The round removes the mode files and the round directory, then frees the lock.
 | label | `review-blocked` is missing while the state requires it | Add it back |
 | error | Ten failed checks in a row | Notify |
 
-Rounds run one after another; questions, approvals, and failed rounds are notified as under Asking the user. A notice record keeps the previous check's view, the notice list, the last check's time, and the state at which a round failed, which the watcher does not retry until something changes (an invocation retries at once). Deleting it at most delays a check or repeats a round.
+Rounds run one after another; questions, approvals, and failed rounds are notified as under Asking the user. A notice record keeps the previous check's view, the notice list, the last check's time, the failed-round counter, and the state at which a round failed, which the watcher does not retry until something changes (an invocation retries at once). Deleting it at most delays a check, repeats a round, or resets the failed-round count.
 
 **Visibility.** `watch status` prints whether the watcher runs and when it last checked; every invocation prints it. The plugin's `SessionStart` hook prints one line when the watch list is not empty and no watcher is running (no lock, or a lock whose process is gone). Invoking the skill restarts it.
 
@@ -147,7 +147,7 @@ Only the three stop cases need the user.
 | Case | Behavior |
 |---|---|
 | An agent cannot start, the hook did not run, or the Codex home listing was not refused | Nothing posted; the user is asked |
-| An agent's output is missing, malformed, too large, or late, or the list fails a check | That agent runs once more; then the round fails with a fixed reason |
+| An agent's output is missing, malformed, too large, or late, or the list fails a check | That agent runs once more; then the round fails with a fixed reason and counts against the daily cap |
 | The submission call errors | A review carrying this round's number and head counts as posted; otherwise submit once more after the same read |
 | A reply fails after submission | The next round posts it |
 | The head moves during the round | `COMMENT` for the reviewed head; the new head is pending |
@@ -159,7 +159,7 @@ Only the three stop cases need the user.
 
 ## Why
 
-- **The pull request is the record people already read.** A local ledger is a second copy whose disagreements become stops with nothing to decide. A review cannot be deleted, so a full state in each needs no history, and detected edits fail safe.
+- **The pull request is the record people already read.** A local ledger is a second copy whose disagreements become stops with nothing to decide. A review cannot be deleted, so the state each one carries needs no history, and detected edits fail safe.
 - **Any pull request may be hostile**, and a claim that one is safe could come from an injected model. The verifier reads where steering text sits, so it is confined too.
 - **A process per agent** reuses the read-only mode unchanged, lets an invocation's round run beside the watcher's on another pull request, needs no orchestrating model, and keeps agents' final messages from every session.
 - **Notes are private to the reviewer** because they are the user's view, not a message to the author; the user chooses between a gist, which needs no setup, and a private repository, which protects by access control rather than by an unguessable URL. Asking once avoids storing anything remote the user did not choose.
@@ -189,7 +189,7 @@ Only the three stop cases need the user.
 - Public pull requests are not checked against related repositories; on private ones, same-owner material can reach readers the pull request lacks.
 - That the user's session never reads the pull request's content rests on the skill text: nothing confines that session, and its tools could read the round directory or the pull request.
 - Claude Code: the hook grants every read; without it the agent reads and writes nothing, and the canary log shows whether it ran. An extension that approves denied calls overrides it. Codex: `explain-pr`'s launch limits apply.
-- Two machines watching one pull request both run agents and can both post within a few seconds. An author who pushes all day reaches the daily cap and waits for the user; one who pushes more often than every five minutes delays the round until they stop.
+- Two machines watching one pull request both run agents and can both post within a few seconds. An author who pushes all day reaches the daily cap and waits for the user; one who pushes more often than every five minutes delays the round until they stop. A failed round costs up to four agent runs of 30 minutes each; failed rounds count against the cap only through a local counter, which deleting the notice record resets.
 - An account without write access cannot resolve threads or set the label. Anyone with write access can edit the skill's comments or remove `review-blocked`; anyone posting as the account can write markers.
 - A push just before submission leaves the approval on the reviewed head.
 - Platforms: the Codex profile is verified only on macOS; its `/tmp` and `/var/tmp` denials mean nothing on Windows, where a Node file mode does not make a directory owner-only and the round directory relies on the user profile's permissions; a head whose file names Windows cannot represent cannot be prepared there, and the round fails. A watcher started inside a sandbox keeps that sandbox, which is why the skill starts it outside one.
