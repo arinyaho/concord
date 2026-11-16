@@ -81,7 +81,7 @@ An approval settles what came before it: the approver saw the pull request as it
 
 Threads and comments from before the approval do not hold, resolved or not, and neither does anything an automation account posts. The inline comments that are part of an approving review that covers the head do not hold either: they are that approval's own remarks. An automated pull request has no approval to count from, so every item of the first kind on it holds it.
 
-The user holds a merge with `blocked`; what the user writes is written as `--self` and does not hold. `review-until-approve` holds one with `review-blocked` while its review records a blocker, because it usually posts as `--self` too. The skill never adds or removes either label. Nothing the skill does releases a hold: only an approval does, and the skill cannot give one that counts.
+The user holds a merge with `blocked`; what the user writes is written as `--self` and does not hold. `review-until-approve` holds one with `review-blocked` while its state records an open or asked blocker or cannot be read, because it usually posts as `--self` too. The skill never adds or removes either label. Nothing the skill does releases a hold: only an approval does, and the skill cannot give one that counts.
 
 ### Automated pull requests
 
