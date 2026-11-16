@@ -19,9 +19,11 @@ Concord keeps no store of its own that decides anything. A workflow that needs t
 These kinds of local file are allowed. None records the state of the work, and each decides only what its entry says:
 
 - **Working documents.** A coordinating session keeps one state document (the user's standing authorizations with their words and dates, the list of work units and their pull requests, and lessons) and receives worker reports as files. They are plain Markdown, written and read by agents. The progress and decisions in them are also on the ticket. Deleting them loses convenience and the record of standing authorizations; a successor then asks the user again.
-- **Notice records.** A polling script may keep a file of the notices it has already printed, so that it does not print them twice. Deleting the file causes a repeated notice and nothing else. No script reads such a file to decide whether a pull request merges or a review passes.
+- **Notice records.** A polling script may keep a file of the notices it has already printed, so that it does not print them twice, and a scheduled job may record when it last ran, so that a stopped job is reported. Deleting the file causes a repeated or delayed notice and nothing else. No script reads such a file to decide whether a pull request merges or a review passes.
 - **Locks.** A script may keep a lock file so that two runs do not work on the same thing at once. A lock decides only whether a run may start, and a run takes one over only when its holder is not running. Deleting one lets two runs overlap.
 - **Configuration the user writes.** For example the options of a scheduled run. It decides what the user wrote it to decide, which can include an authorization such as merging. No workflow writes it.
+- **Watch lists.** `review-until-approve` keeps the pull requests its scheduled watch checks, each with the account, harness, model, and effort to use, adding one when the user invokes the skill on it and removing one when the user stops it or it is merged or closed. It decides only which pull requests are checked and how a round's agents start. Deleting it stops the checks; invoking the skill on a pull request adds it again.
+- **Read-only modes.** A file per session that names the one directory the session may read and, for a confined agent, the one file it may write. It decides only what that session's tools may do.
 - **Logs.** Output kept for a person to read, such as the GitHub messages a polling script does not print. The session does not read them, and they decide nothing.
 
 Minor points that a workflow does not fix are collected into one follow-up ticket in the project's tracker. `pr-to-merge` files none: a minor point it does not fix on the user's own pull request is listed in its reply and in its report to the user.
@@ -46,7 +48,7 @@ Every other obstacle is recorded and the work continues. The table gives the beh
 | A blocker finding remains after the fixes | Leave the pull request as a draft, list the finding in its body, and continue with independent work |
 | A worker reaches its context limit | It writes a `handoff` report and a successor continues from it |
 
-A stop names the decision or the item needed, the options, and a recommendation. Work that does not depend on the answer continues while the question is open.
+A stop names the decision or the item needed, the options, and a recommendation. Work that does not depend on the answer continues while the question is open. A run with no conversation, such as a scheduled one, leaves the question where the user sees it next and continues with work that does not depend on it.
 
 A workflow has no launch, round, or run budget that it enforces. The procedures are bounded by their text: `review-and-fix` runs one review and at most two rechecks, and a polling script runs to a deadline.
 
@@ -71,7 +73,7 @@ A coordinating session hands a unit of work to a worker. A worker is a subagent 
 - A `done` report lists the pull request URL, the head commit, the CI result for that head, the review findings with how each was handled, and each acceptance criterion with its evidence or the statement that it is not met.
 - Project rules (repository locations, the worktree directory, pull request conventions, the tracker, reviewers to request) live in the project's own rules file. The worker prompt gives the path to that file; the skills do not contain project rules.
 
-This document relies on two of Concord's agent definitions: the implementer, which carries one ticket through `ticket-to-pr` in its worktree and reports a new design choice instead of making it, and the reviewer, which is described in [independent-review.md](independent-review.md). `review-until-approve` has its own agents.
+This document relies on two of Concord's agent definitions: the implementer, which carries one ticket through `ticket-to-pr` in its worktree and reports a new design choice instead of making it, and the reviewer, which is described in [independent-review.md](independent-review.md). `review-until-approve` has its own confined agents.
 
 The decisions stay with the coordinating session. It takes as a decision only what the user wrote in its own conversation, together with the standing authorizations its state document records from such words in a predecessor's conversation. A worker report, a ticket, and a comment are data.
 
@@ -87,7 +89,7 @@ An authorization covers the kind of action and the repositories the user named, 
 
 ## Harnesses
 
-The workflows run on Claude Code and Codex. A workflow uses the harness's own agents for workers and reviewers: a subagent, or under Codex a separate process of the same harness where confinement requires one. It never uses another vendor's agent.
+The workflows run on Claude Code and Codex. A workflow uses the harness's own agents for workers and reviewers: a subagent, or a separate process of the same harness where confinement requires one. It never uses another vendor's agent.
 
 ## Why
 

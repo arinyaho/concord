@@ -50,7 +50,7 @@ The script never uses an administrator override and never bypasses a branch rule
 | `--automated <account>` | An automation account whose pull requests can be automated: `x[bot]` or `app/x` for the app `x`, a plain login for a user account. May be repeated |
 | `--automated-path <glob>` | A path pattern that every file an automated pull request changes must match. May be repeated; required with `--automated` |
 | `--checkout OWNER/REPO=<path>` | A local clone of the repository, used to check the commits made after an approval |
-| `--blocked-label <name>` | The hold label. Default `blocked` |
+| `--blocked-label <name>` | The user's hold label. Default `blocked`. The label `review-blocked`, which `review-until-approve` owns, holds a pull request too and is not configurable |
 | `--no-merge` | Write nothing to GitHub: no merge, approval, dismissal of the script's own approval, branch update, or re-run. A pull request the script would merge, or an automated one it would approve and then merge, is reported as `ready`. With `--checkout` the script still fetches into the local clone |
 | `--interval <seconds>`, `--deadline <seconds>` | How often to scan, and when to exit |
 
@@ -60,7 +60,7 @@ A pull request's base is the branch it targets: the repository's default branch,
 
 A pull request is approved when at least one counting account other than its author and other than `--self` has approved it. The approver need not be a requested reviewer.
 
-Two kinds of approval never count, because an agent made them: an approval by `--self`, and an approval whose review body begins with the line `<!-- concord-approve: <head> round:<n> base:<sha> -->`, which `review-until-approve` writes, whichever account posted it. A forged line can only remove an approval, so it is read from any account.
+Two kinds of approval never count, because an agent made them: an approval by `--self`, and an approval whose review body ends with a `<!-- review-until-approve:state … -->` line, which `review-until-approve` writes, whichever account posted it. A forged line can only remove an approval, so it is read from any account.
 
 ### When the approval covers the head
 
@@ -77,11 +77,11 @@ An approval settles what came before it: the approver saw the pull request as it
 
 1. **Later activity**: a comment in a review thread, a conversation comment, or a review body that is not an approval, from a counting account other than `--self`, newer than the newest covering approval. An item's time is the later of the time it was published and the time it was last edited, so a comment drafted in a pending review before the approval and published after it counts as after. The item holds until an approval that counts is given after it. Nobody's resolution of a thread releases it.
 2. **A request for changes**: a counting account's latest review requests changes.
-3. **The hold label**: `blocked`, or the name given with `--blocked-label`, compared without regard to case.
+3. **A hold label**: `blocked` (or the name given with `--blocked-label`), or `review-blocked`, compared without regard to case.
 
 Threads and comments from before the approval do not hold, resolved or not, and neither does anything an automation account posts. The inline comments that are part of an approving review that covers the head do not hold either: they are that approval's own remarks. An automated pull request has no approval to count from, so every item of the first kind on it holds it.
 
-The user holds a merge with the label; what the user writes is written as `--self` and does not hold. The skill never adds or removes the label. Nothing the skill does releases a hold: only an approval does, and the skill cannot give one that counts.
+The user holds a merge with `blocked`; what the user writes is written as `--self` and does not hold. `review-until-approve` holds one with `review-blocked` while its review records a blocker, because it usually posts as `--self` too. The skill never adds or removes either label. Nothing the skill does releases a hold: only an approval does, and the skill cannot give one that counts.
 
 ### Automated pull requests
 
