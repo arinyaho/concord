@@ -23,15 +23,15 @@ let m;
 if (a[0] === 'pr' && a[1] === 'view') {
   const fields = a[a.indexOf('--json') + 1].split(',');
   out(Object.fromEntries(fields.map((f) => [f, pr[f]])));
-} else if (a[0] === 'pr' && a[1] === 'diff') out(w.diff);
-else if (a[0] === 'api' && url === 'user') out({ login: w.login });
+} else if (a[0] === 'api' && url === 'user') out({ login: w.login });
 else if (a[0] === 'api' && url === 'graphql') paged({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: w.threads } } } } });
 else if (a[0] === 'api' && (m = /^repos\\/[^/]+\\/[^/]+\\/pulls\\/\\d+\\/files$/.exec(url))) paged(w.files);
 else if (a[0] === 'api' && /^repos\\/[^/]+\\/[^/]+\\/issues\\/\\d+\\/comments$/.test(url)) paged(w.comments);
 else if (a[0] === 'api' && (m = /^repos\\/([^/]+\\/[^/]+)\\/issues\\/(\\d+)$/.exec(url))) {
   const issue = w.issues[m[1] + '#' + m[2]];
   issue ? out(issue) : fail('HTTP 404: Not Found');
-} else if (a[0] === 'api' && /^repos\\/[^/]+\\/[^/]+\\/commits\\/\\w+\\/check-runs$/.test(url)) paged({ total_count: w.checks.length, check_runs: w.checks });
+} else if (a[0] === 'api' && /^repos\\/[^/]+\\/[^/]+\\/compare\\//.test(url)) out({ merge_base_commit: { sha: w.mergeBase } });
+else if (a[0] === 'api' && /^repos\\/[^/]+\\/[^/]+\\/commits\\/\\w+\\/check-runs$/.test(url)) paged({ total_count: w.checks.length, check_runs: w.checks });
 else if (a[0] === 'api' && (m = /^repos\\/[^/]+\\/[^/]+\\/commits\\?(.*)$/.exec(url))) {
   const q = new URLSearchParams(m[1]);
   out(Array.from({ length: Math.min(100, (w.reader || {})[q.get('path')] || 0) }, (_, i) => ({ sha: 'c' + i })));
@@ -41,20 +41,25 @@ else if (a[0] === 'api' && (m = /^repos\\/[^/]+\\/[^/]+\\/commits\\?(.*)$/.exec(
 const sh = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
 // A local bare origin whose head commit is reachable only from refs/pull/<n>/head, and a clone of it made over the
-// file transport, so `git fetch origin <oid>` really fetches. `files` maps each head path to its content; a value
-// { link } makes a symlink.
-function gitPr(number, files) {
+// file transport, so `git fetch origin <oid>` really fetches. `base` and `files` map each path of the base and head
+// commits to its content; in `files`, a value { link } makes a symlink and null deletes the path.
+function gitPr(number, files, base = {}) {
   const dir = tempDir('xpr-git-');
   const work = path.join(dir, 'work');
   fs.mkdirSync(work);
   sh(work, 'init', '-q', '-b', 'main');
-  fs.writeFileSync(path.join(work, 'base.txt'), 'base\n');
+  for (const [p, content] of Object.entries({ 'base.txt': 'base\n', ...base })) {
+    fs.mkdirSync(path.dirname(path.join(work, p)), { recursive: true });
+    fs.writeFileSync(path.join(work, p), content);
+  }
   sh(work, 'add', '.');
   sh(work, 'commit', '-q', '-m', 'base');
+  const baseOid = sh(work, 'rev-parse', 'HEAD');
   sh(work, 'checkout', '-q', '-b', 'pr');
   for (const [p, content] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(work, p)), { recursive: true });
-    if (typeof content.link === 'string') fs.symlinkSync(content.link, path.join(work, p));
+    if (content === null) fs.rmSync(path.join(work, p));
+    else if (typeof content.link === 'string') fs.symlinkSync(content.link, path.join(work, p));
     else fs.writeFileSync(path.join(work, p), content);
   }
   sh(work, 'add', '-A');
@@ -67,7 +72,7 @@ function gitPr(number, files) {
   sh(bare, 'branch', '-q', '-D', 'pr');
   const checkout = path.join(dir, 'checkout');
   sh(dir, 'clone', '-q', `file://${bare}`, checkout);
-  return { head, bare, checkout };
+  return { head, base: baseOid, bare, checkout };
 }
 
 function world(data) {

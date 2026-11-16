@@ -19,11 +19,13 @@ function fixture() {
     'package-lock.json': '{}\n',
     '.gitattributes': 'dist/** linguist-generated\n',
     'dist/bundle.js': 'bundled\n',
+    'src/old.js': null,
     'src/new.js': 'one\ntwo\n',
     'img.png': Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 0xff]),
     link: { link: outside },
     'sub/inner': { link: '../base.txt' },
-  });
+    ...Object.fromEntries(Array.from({ length: 96 }, (_, i) => [`f/${i}.txt`, 'x\n'.repeat(i + 2)])),
+  }, { 'src/old.js': 'one\ntwo\n' });
   const file = (filename, additions, over = {}) => ({ filename, status: 'modified', additions, deletions: 0, ...over });
   const files = [
     file('package-lock.json', 500), file('dist/bundle.js', 300),
@@ -34,17 +36,21 @@ function fixture() {
   const w = world({
     login: 'reader',
     pr: {
-      number: 7, title: 'Fix login', author: { login: 'alice' }, baseRefName: 'main', baseRefOid: 'b'.repeat(40),
+      number: 7, title: 'Fix login', author: { login: 'alice' }, baseRefName: 'main', baseRefOid: repo.base,
       headRefName: 'pr', headRefOid: repo.head, labels: [], isDraft: false,
-      body: `Fixes https://acme.atlassian.net/browse/ES2-100 and ES2-3464.\n${INJECTION}\nSpec: https://www.notion.so/acme/Spec-abc123.\nSee https://github.com/acme/app/pull/3`,
+      body: `Fixes https://acme.atlassian.net/browse/ES2-100 and ES2-3464 in UTF-8 and SHA-256.\nFollows #9 and #3, see #5, #7 and #404.\n${INJECTION}\nSpec: https://www.notion.so/acme/Spec-abc123.\nSee https://github.com/acme/app/pull/3`,
       closingIssuesReferences: [{ number: 5, repository: { name: 'app', owner: { login: 'acme' } } }],
       commits: [{ oid: repo.head, messageHeadline: 'Add thing', messageBody: 'Task https://app.asana.com/0/1/2' }],
     },
-    diff: 'diff --git a/src/old.js b/src/new.js\n',
+    mergeBase: repo.base,
     files,
     threads: [{ path: 'src/new.js', line: 2, isResolved: false, comments: { nodes: [{ author: { login: 'bob' }, body: 'why?' }] } }],
     comments: [{ user: { login: 'bob' }, body: 'LGTM', created_at: '2026-01-01T00:00:00Z' }],
-    issues: { 'acme/app#5': { number: 5, title: 'Bug', body: 'broken', state: 'open' } },
+    issues: {
+      'acme/app#5': { number: 5, title: 'Bug', body: 'broken', state: 'open' },
+      'acme/app#9': { number: 9, title: 'Earlier bug', body: 'context', state: 'closed' },
+      'acme/app#3': { number: 3, title: 'Earlier PR', body: 'pr body', state: 'closed', pull_request: { url: 'x' } },
+    },
     checks: [{ name: 'build', status: 'completed', conclusion: 'success', html_url: 'https://example.com/run' }],
     reader: { 'src/new.js': 3, 'package-lock.json': 150 },
   });
@@ -89,7 +95,19 @@ test('prepare writes the prepared directory and prints only counts and trackers'
   assert.equal(readJson(d, 'threads.json')[0].comments.nodes[0].body, 'why?');
   assert.equal(readJson(d, 'comments.json')[0].body, 'LGTM');
   assert.equal(readJson(d, 'checks.json')[0].conclusion, 'success');
-  assert.equal(fs.readFileSync(path.join(d, 'diff.patch'), 'utf8'), 'diff --git a/src/old.js b/src/new.js\n');
+  const diff = fs.readFileSync(path.join(d, 'diff.patch'), 'utf8');
+  for (const part of ['rename from src/old.js\nrename to src/new.js', 'diff --git a/f/95.txt b/f/95.txt', 'Binary files /dev/null and b/img.png differ', 'diff --git a/dist/bundle.js b/dist/bundle.js']) {
+    assert.ok(diff.includes(part), part);
+  }
+  assert.ok(!diff.includes('diff --git a/base.txt'), 'only the changes since the merge base');
+  assert.ok(!w.calls().some((c) => c[0] === 'pr' && c[1] === 'diff'));
+
+  // Closing and referenced issues; a referenced pull request is marked; the PR itself and an unknown number are skipped.
+  assert.deepEqual(fs.readdirSync(path.join(d, 'issues')).sort(), ['3.json', '5.json', '9.json']);
+  assert.equal(readJson(d, 'issues', '9.json').body, 'context');
+  assert.equal(readJson(d, 'issues', '9.json').pullRequest, undefined);
+  assert.equal(readJson(d, 'issues', '3.json').pullRequest, true);
+  assert.equal(w.calls().filter((c) => c.includes('repos/acme/app/issues/5')).length, 1);
 
   // The head tree, without .git and without any symlink.
   assert.equal(fs.readFileSync(path.join(d, 'head', 'src', 'new.js'), 'utf8'), 'one\ntwo\n');
@@ -150,11 +168,14 @@ test('a failed prepare prints a fixed description and leaves no directory', () =
 test('prepare deletes mode files older than 30 days', () => {
   const { repo, w, data } = fixture();
   fs.mkdirSync(path.join(data, 'modes'));
+  for (const name of ['.tmp-old', '.tmp-new']) fs.mkdirSync(path.join(data, 'prs', name), { recursive: true });
+  fs.utimesSync(path.join(data, 'prs', '.tmp-old'), (Date.now() - 2 * 864e5) / 1000, (Date.now() - 2 * 864e5) / 1000);
   for (const name of ['old', 'new']) fs.writeFileSync(path.join(data, 'modes', name), '/x\n');
   const old = (Date.now() - 31 * 864e5) / 1000;
   fs.utimesSync(path.join(data, 'modes', 'old'), old, old);
   assert.equal(run(w, ['prepare', 'acme/app', '7', '--checkout', repo.checkout], { EXPLAIN_PR_DIR: data }).status, 0);
   assert.deepEqual(fs.readdirSync(path.join(data, 'modes')), ['new']);
+  assert.ok(!fs.existsSync(path.join(data, 'prs', '.tmp-old')) && fs.existsSync(path.join(data, 'prs', '.tmp-new')));
 });
 
 test('allow adds each tool once, and a later prepare lists only the trackers without tools', () => {
@@ -197,6 +218,7 @@ test('start turns the mode on under Claude Code and prints the reading-session c
     `'Run the explain-pr skill on this directory.'`,
   ]) assert.ok(launch.includes(part), `${part} in ${launch}`);
   assert.ok(!launch.includes('--dangerously-bypass-hook-trust'));
+  assert.deepEqual(off.json.skippedTools, []);
 
   for (const bad of [tempDir('xpr-elsewhere-'), path.join(data, 'prs'), path.join(data, 'prs', '.tmp-x')]) {
     fs.mkdirSync(bad, { recursive: true });
@@ -205,6 +227,20 @@ test('start turns the mode on under Claude Code and prints the reading-session c
     assert.equal(r.stderr.trim().split('\n').length, 1);
   }
   assert.ok(!fs.existsSync(path.join(data, 'modes', 's2')));
+});
+
+test('a listed tool whose names are not bare TOML keys is left out of the launch command and reported', () => {
+  const { repo, w, data } = fixture();
+  const dir = run(w, ['prepare', 'acme/app', '7', '--checkout', repo.checkout], { EXPLAIN_PR_DIR: data }).json.dir;
+  const odd = ["mcp__x__a'b", 'mcp__x__a;rm', 'mcp__x"y__z', 'getIssue'];
+  assert.deepEqual(run(w, ['allow', 'jira', 'mcp__atl__get', ...odd], { EXPLAIN_PR_DIR: data }).json.tools, ['mcp__atl__get', ...odd]);
+  const r = run(w, ['start', dir], { EXPLAIN_PR_DIR: data });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.json.skippedTools, odd);
+  const parsed = spawnSync('sh', ['-c', `printf '%s\\n' ${r.json.launch.replace(/^codex /, '')}`], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+  assert.deepEqual(parsed.filter((a, i) => parsed[i - 1] === '-c' && a.startsWith('mcp_servers')), ['mcp_servers.atl.tools.get.approval_mode="approve"']);
+  assert.equal(parsed[parsed.length - 1], 'Run the explain-pr skill on this directory.');
+  assert.ok(!r.json.launch.includes('a;rm') && !r.json.launch.includes('getIssue'));
 });
 
 test('the launch command quotes an embedded single quote for sh', () => {

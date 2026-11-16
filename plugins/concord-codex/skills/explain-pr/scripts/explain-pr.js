@@ -45,6 +45,12 @@ const NAME = /^[\w.-]+$/;
 
 const URL_RE = /https?:\/\/[^\s<>()[\]{}"'`|]+/g;
 const KEY_RE = /\b[A-Z][A-Z0-9]{1,9}-\d+\b/g;
+// Prefixes of names that look like a Jira key but are not one (UTF-8, SHA-256, RFC-9110).
+const NOT_KEYS = new Set(['UTF', 'SHA', 'ISO', 'RFC', 'CVE', 'AES', 'TLS', 'HTTP', 'MD', 'RSA', 'ECDSA']);
+// "#123" for an issue or pull request of the same repository, not inside a word, path or HTML entity.
+const REF_RE = /(?<![\w&/])#(\d+)\b/g;
+const HEX_OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+const DAY = 864e5;
 // The tracker of a URL: a name, null for a link to anything else, undefined for GitHub's own links (issues are read
 // into issues/) and for text that is not a URL.
 function trackerOf(link) {
@@ -64,7 +70,7 @@ function findLinks(texts) {
     if (typeof text !== 'string') continue;
     const add = (link, tracker) => { if (tracker !== undefined && !seen.has(link)) seen.set(link, { link, tracker, source }); };
     for (const [m] of text.matchAll(URL_RE)) { const link = m.replace(/[.,;:!?]+$/, ''); add(link, trackerOf(link)); }
-    for (const [m] of text.replace(URL_RE, ' ').matchAll(KEY_RE)) add(m, 'jira');
+    for (const [m] of text.replace(URL_RE, ' ').matchAll(KEY_RE)) if (!NOT_KEYS.has(m.split('-')[0])) add(m, 'jira');
   }
   return [...seen.values()];
 }
@@ -97,6 +103,11 @@ function prepare(args) {
 
   core.pruneModes(DATA, Date.now());
   fs.mkdirSync(PRS, { recursive: true });
+  // A temporary directory a day old belongs to a run that was killed, not to one still working.
+  for (const e of fs.readdirSync(PRS)) {
+    const p = path.join(PRS, e);
+    try { if (e.startsWith('.tmp-') && Date.now() - fs.statSync(p).mtimeMs > DAY) fs.rmSync(p, { recursive: true, force: true }); } catch { /* vanished */ }
+  }
   // Built under a temporary name and renamed at the end, so a failed run leaves nothing `start` accepts.
   const tmp = fs.mkdtempSync(path.join(PRS, '.tmp-'));
   const gitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'explain-pr-git-'));
@@ -105,13 +116,11 @@ function prepare(args) {
   try {
     const { commits, ...pr } = gh('pr', 'view', num, '--repo', repo, '--json', PR_FIELDS);
     const head = pr.headRefOid;
-    if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head)) throw new Error('bad head');
+    if (!HEX_OID.test(head) || !HEX_OID.test(pr.baseRefOid)) throw new Error('bad commit');
     write('pr.json', pr);
     const messages = commits.map((c) => ({ oid: c.oid, message: c.messageBody ? `${c.messageHeadline}\n\n${c.messageBody}` : c.messageHeadline }));
     write('commits.json', messages);
 
-    step = 'read the diff';
-    fs.writeFileSync(path.join(tmp, 'diff.patch'), run('gh', ['pr', 'diff', num, '--repo', repo], { encoding: 'buffer' }));
     step = 'read the changed files';
     const changed = pages(`repos/${repo}/pulls/${num}/files`).flat();
     step = 'read the review threads';
@@ -121,30 +130,48 @@ function prepare(args) {
       .flatMap((p) => p.data.repository.pullRequest.reviewThreads.nodes));
     step = 'read the comments';
     write('comments.json', pages(`repos/${repo}/issues/${num}/comments`).flat().map((c) => ({ author: c.user?.login, body: c.body, createdAt: c.created_at })));
-    step = 'read the closing issues';
+    step = 'read the linked issues';
     fs.mkdirSync(path.join(tmp, 'issues'));
+    const saveIssue = (r, i) => write(`issues/${r === repo ? '' : `${r.replace('/', '__')}__`}${i.number}.json`,
+      { repo: r, number: i.number, title: i.title, body: i.body, state: i.state, ...(i.pull_request && { pullRequest: true }) });
+    const fetched = new Set([Number(num)]);
     for (const ref of pr.closingIssuesReferences || []) {
       const r = `${ref.repository?.owner?.login}/${ref.repository?.name}`;
       if (!/^[\w.-]+\/[\w.-]+$/.test(r) || !Number.isInteger(ref.number)) throw new Error('bad issue');
-      const i = gh('api', `repos/${r}/issues/${ref.number}`);
-      write(`issues/${r === repo ? '' : `${r.replace('/', '__')}__`}${ref.number}.json`, { repo: r, number: i.number, title: i.title, body: i.body, state: i.state });
+      saveIssue(r, gh('api', `repos/${r}/issues/${ref.number}`));
+      if (r === repo) fetched.add(ref.number);
+    }
+    const texts = [['title', pr.title], ['body', pr.body], ...messages.map((c) => [`commit ${c.oid}`, c.message])];
+    const refs = [...new Set(texts.flatMap(([, t]) => [...String(t || '').matchAll(REF_RE)].map((m) => Number(m[1]))))].filter((n) => !fetched.has(n));
+    // ponytail: at most 100 referenced numbers, so a body full of "#n" cannot make thousands of calls.
+    for (const n of refs.slice(0, 100)) {
+      let i;
+      try { i = gh('api', `repos/${repo}/issues/${n}`); } catch { continue; } // "#n" need not name an issue
+      saveIssue(repo, i);
     }
     step = 'read the check runs';
     write('checks.json', pages(`repos/${repo}/commits/${head}/check-runs`).flatMap((p) => p.check_runs)
       .map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, url: c.html_url })));
 
+    step = 'find the merge base';
+    const mergeBase = gh('api', `repos/${repo}/compare/${pr.baseRefOid}...${head}?per_page=1`).merge_base_commit?.sha;
+    if (!HEX_OID.test(mergeBase || '')) throw new Error('bad merge base');
     step = 'fetch the head commit';
     const git = (...a) => run('git', ['-C', gitDir, ...a]);
     git('init', '-q', '--bare');
     fs.mkdirSync(path.join(gitDir, 'objects', 'info'), { recursive: true });
     fs.mkdirSync(path.join(gitDir, 'info'), { recursive: true });
     if (checkout) {
-      run('git', ['-C', checkout, 'fetch', '-q', 'origin', head]);
+      run('git', ['-C', checkout, 'fetch', '-q', 'origin', head, mergeBase]);
       const objects = run('git', ['-C', checkout, 'rev-parse', '--path-format=absolute', '--git-path', 'objects']).trim();
       fs.writeFileSync(path.join(gitDir, 'objects', 'info', 'alternates'), `${objects}\n`);
-    } else git('fetch', '-q', '--depth', '1', `https://github.com/${repo}.git`, head);
+    } else git('fetch', '-q', '--depth', '1', `https://github.com/${repo}.git`, head, mergeBase);
     // Every file goes into head/ as committed, whatever export-ignore or export-subst the tree's .gitattributes set.
     fs.writeFileSync(path.join(gitDir, 'info', 'attributes'), '* -export-ignore -export-subst\n');
+    step = 'write the diff';
+    // The diff GitHub shows, made locally (gh pr diff refuses large pull requests), without the user's diff drivers.
+    fs.writeFileSync(path.join(tmp, 'diff.patch'), run('git', ['-C', gitDir, 'diff', '-M', '--no-ext-diff', '--no-textconv', '--no-color',
+      '--src-prefix=a/', '--dst-prefix=b/', mergeBase, head], { encoding: 'buffer' }));
     step = 'extract the head tree';
     git('archive', '--format=tar', '-o', path.join(gitDir, 'head.tar'), head);
     fs.mkdirSync(path.join(tmp, 'head'));
@@ -174,7 +201,7 @@ function prepare(args) {
     })));
 
     step = 'write the prepared directory';
-    const found = findLinks([['title', pr.title], ['body', pr.body], ...messages.map((c) => [`commit ${c.oid}`, c.message])]);
+    const found = findLinks(texts);
     write('links.json', found);
     const trackers = [...new Set(found.map((l) => l.tracker).filter(Boolean))].sort();
     const allowed = core.readAllowedTools(DATA);
@@ -207,18 +234,23 @@ function allow([tracker, ...tools]) {
 }
 
 const shq = (a) => `'${a.replace(/'/g, "'\\''")}'`;
-const tomlKey = (k) => (/^[A-Za-z0-9_-]+$/.test(k) ? k : JSON.stringify(k));
 // The Codex reading session: reads confined to the prepared directory by a permissions profile (not -s, which would
 // force the legacy sandbox), no approval prompts, no web search, no apps connector. The listed MCP tools are approved
-// in advance, since `-a never` refuses a call that needs approval; other MCP servers stay as configured, and the hook
-// denies their tools.
+// in advance, since `-a never` refuses a call that needs approval; a listed tool that is not mcp__<server>__<tool> with
+// both names bare TOML keys gets no switch and is returned in skippedTools. Other MCP servers stay as configured, and
+// the hook denies their tools.
 function launchCommand(dir) {
-  const approve = [...new Set(core.allToolNames(core.readAllowedTools(DATA)))].map((t) => /^mcp__(.+?)__(.+)$/.exec(t)).filter(Boolean)
-    .flatMap(([, server, tool]) => ['-c', `mcp_servers.${tomlKey(server)}.tools.${tomlKey(tool)}.approval_mode="approve"`]);
+  const approve = [];
+  const skippedTools = [];
+  for (const t of new Set(core.allToolNames(core.readAllowedTools(DATA)))) {
+    const m = /^mcp__([A-Za-z0-9_-]+?)__([A-Za-z0-9_-]+)$/.exec(t);
+    if (m) approve.push('-c', `mcp_servers.${m[1]}.tools.${m[2]}.approval_mode="approve"`);
+    else skippedTools.push(t);
+  }
   const args = ['-C', dir, '-a', 'never', '-c', 'default_permissions="explain-pr"',
     '-c', `permissions.explain-pr.filesystem={":minimal"="read",${JSON.stringify(dir)}="read"}`,
     '-c', 'web_search="disabled"', '--disable', 'apps', ...approve, 'Run the explain-pr skill on this directory.'];
-  return ['codex', ...args.map(shq)].join(' ');
+  return { launch: ['codex', ...args.map(shq)].join(' '), skippedTools };
 }
 
 function start(args) {
@@ -229,7 +261,7 @@ function start(args) {
   if (!dir || !prs || path.dirname(dir) !== prs || path.basename(dir).startsWith('.') || !fs.statSync(dir).isDirectory()) {
     usage('start: the directory is not one prepare wrote');
   }
-  if (harness === 'codex') return print({ mode: 'off', launch: launchCommand(dir) });
+  if (harness === 'codex') return print({ mode: 'off', ...launchCommand(dir) });
   try {
     core.writeMode(DATA, process.env.CLAUDE_CODE_SESSION_ID, dir);
   } catch {
