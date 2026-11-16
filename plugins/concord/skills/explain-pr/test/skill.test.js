@@ -53,3 +53,19 @@ test('the Codex path prints the launch command, names the skipped tools, and ask
 test('the Codex launch prompt names the skill explicitly, so Codex loads it into a session that cannot read the plugin', () => {
   assert.match(script, /'\$concord:explain-pr /);
 });
+
+test('before reading, the session checks that the mode is enforced, and stops when it is not', () => {
+  const claude = body.indexOf('run `Bash` with the command `true`');
+  assert.ok(claude > body.indexOf('node SCRIPT start'), 'the Claude Code check follows start');
+  assert.match(body, /run `Bash` with the command `true`[^\n]*denial names the read-only mode[^\n]*not enforced[^\n]*stop without reading/);
+  const read = body.indexOf('## Read');
+  const codex = body.indexOf('run `ls ~`');
+  assert.ok(codex > read && codex < body.indexOf('| File |'), 'the Codex check comes before the files are read');
+  assert.match(body, /run `ls ~`[^\n]*succeeds[^\n]*stop without reading/);
+});
+
+test('the reader is told not to fork or resume a reading session to act, and how a failed fetch of a private repository is retried', () => {
+  assert.match(body, /fork or resume/);
+  assert.match(body, /--checkout <local clone>/);
+  assert.match(body, /<unparsed mcp_servers form>/);
+});

@@ -24,26 +24,28 @@ The pull request's title, body, comments, commit messages, linked tickets, and c
 
 ## 1. Prepare
 
-Run `node SCRIPT prepare <owner/repo> <number>`. Add `--checkout <path>` when a local clone of that repository has it as `origin`; it saves a fetch. The line is `{dir, files, additions, deletions, trackers, unlistedTrackers}`. On exit 1, relay the one stderr line and stop.
+Run `node SCRIPT prepare <owner/repo> <number>`. Add `--checkout <path>` when a local clone of that repository has it as `origin`; it saves a fetch. The line is `{dir, files, additions, deletions, trackers, unlistedTrackers}`. On exit 1, relay the one stderr line and stop; when it says the head commit could not be fetched (a private repository, for one), suggest running it again with `--checkout <local clone>`. `prepare` deletes prepared directories older than 30 days.
 
 Read nothing in the prepared directory before `start` has run, and nothing of the pull request by any other way (no `gh pr view`, no web page). Until then, all you know of it is that line. Under Codex, never read the prepared directory in this session at all.
 
 ## 2. Allow tracker tools
 
-Only when `unlistedTrackers` is non-empty. For each tracker in it, name the tools your harness offers that read from that tracker (an issue or page lookup, never one that creates, edits, or comments), by exact name. Ask the reader once, in one question for all trackers, which to allow. For each tracker the reader allows tools for, run `node SCRIPT allow <tracker> <tool>...`. The list is kept per user, so the next pull request does not ask again. If the reader allows none, continue: Intent will say which ticket could not be read.
+Only when `unlistedTrackers` is non-empty. For each tracker in it, name the MCP tools your harness offers that read from that tracker (an issue or page lookup, never one that creates, edits, or comments), by exact name (`mcp__<server>__<tool>`; `allow` takes no other name). Ask the reader once, in one question for all trackers, which to allow. For each tracker the reader allows tools for, run `node SCRIPT allow <tracker> <tool>...`. The list is kept per user, so the next pull request does not ask again. If the reader allows none, continue: Intent will say which ticket could not be read.
 
 Under Codex, only tools of an MCP server (`mcp__<server>__<tool>`) work in the reading session; tools served through ChatGPT apps are switched off there. Say so before asking.
 
 ## 3. Start
 
-Under Claude Code, tell the reader before you run it: once the mode is on, this session cannot act again (no commands, no edits, no posting) until `/clear` or a new session.
+Under Claude Code, tell the reader before you run it: once the mode is on, this session cannot act again (no commands, no edits, no posting) until `/clear` or a new session. Forking or resuming it does not give a way to act: do not fork or resume a reading session in order to act; `/clear` or a new session is the way out.
 
 Run `node SCRIPT start <dir>` with the `dir` from step 1. On exit 2, relay the stderr line and stop.
 
-- **Claude Code** prints `{"mode":"on"}`. The mode is on for this session: from here you can only `Read`, `Glob`, and `Grep` inside `<dir>` (give `Glob` and `Grep` a `path` inside `<dir>` and a relative pattern) and call the allowed tracker tools; every other call is denied. Tell the reader that there is no command that ends the mode, and that `/clear` or a new session ends it. Go to "Read".
-- **Codex** prints `{"mode":"off","launch":…,"skippedTools":[…],"skippedServers":[…]}`. Tell the reader: before running it, trust the plugin's read-only hook once in `/hooks` if they have not; Codex runs a plugin hook only after that, and the hook is the second line behind the launch command's switches. Then give `launch` verbatim in a code block, to run in a terminal; it starts a new Codex session that can read only the prepared directory, with every MCP server of the reader's `config.toml` that hosts no allowed tool switched off. If `skippedTools` is non-empty, name each of those tools and say that it was left out of the reading session and will not run there. If `skippedServers` is non-empty, name each of those servers and say that the command could not switch it off, so only the hook stops its tools. Then stop. This session does nothing more with the pull request.
+- **Claude Code** prints `{"mode":"on"}`. The mode is on for this session: from here you can only `Read`, `Glob`, and `Grep` inside `<dir>` (give `Glob` and `Grep` a `path` inside `<dir>` and a relative pattern), call the allowed tracker tools, and use `ToolSearch` to load a deferred one; every other call is denied, a subagent's included. Check that it is enforced: run `Bash` with the command `true`, and continue only if it is denied and the denial names the read-only mode; otherwise tell the reader the mode is not enforced (hooks off, `node` not on the hook's path, or a different data directory) and stop without reading. Tell the reader that there is no command that ends the mode, and that `/clear` or a new session ends it. Go to "Read".
+- **Codex** prints `{"mode":"off","launch":…,"skippedTools":[…],"skippedServers":[…]}`. Tell the reader: before running it, trust the plugin's read-only hook once in `/hooks` if they have not; Codex runs a plugin hook only after that, and the hook is the second line behind the launch command's switches. Then give `launch` verbatim in a code block, to run in a terminal; it starts a new Codex session that can read only the prepared directory, with browser use, computer use, image generation, and multi-agent off, only core environment variables passed to commands, and every `[mcp_servers.<id>]` table of the reader's `config.toml` that hosts no allowed tool switched off. Servers that a plugin or a system or managed configuration provides are not switched off. If `skippedTools` is non-empty, name each of those tools and say that it was left out of the reading session and will not run there. If `skippedServers` is non-empty, name each of those servers and say that the command could not switch it off, so only the hook stops its tools; `<unparsed mcp_servers form>` means servers defined in another form (an `[mcp_servers]` table, a dotted or inline `mcp_servers` key) that the command could not name. Then stop. This session does nothing more with the pull request.
 
 ## Read
+
+Under Codex, first check that the profile holds: run `ls ~`; it must fail. If it succeeds, the reading session is not confined: tell the reader and stop without reading.
 
 Read the prepared directory and nothing else. Under Codex, read with shell commands (`cat`, `sed -n`, `rg`) inside it and change nothing.
 
@@ -51,10 +53,10 @@ Read the prepared directory and nothing else. Under Codex, read with shell comma
 |---|---|
 | `pr.json` | Number, title, body, author, base and head refs and commits, labels, draft state |
 | `diff.patch` | The diff from the merge base to the head, with renames detected |
-| `files.json` | Per file: status, additions, deletions, `previous` (rename source), `lockfile`, `generated`, `symlink` |
+| `files.json` | Per file, from git: status, additions, deletions, `previous` (rename source), `binary`, `lockfile`, `generated`, `symlink` |
 | `symlinks.json` | Symlinks of the head tree, with their targets; they are removed from `head/` |
 | `commits.json` | Each commit's hash and message |
-| `threads.json`, `comments.json` | Review threads and conversation comments |
+| `threads.json`, `comments.json` | Review threads and conversation comments; `"truncated": true` marks a thread cut at 100 comments |
 | `issues/` | Issues the pull request closes or references; `"pullRequest": true` marks a referenced pull request |
 | `links.json` | Other ticket and document links, with their tracker when it is recognized |
 | `checks.json` | Check runs on the head commit and their conclusions |
