@@ -7,6 +7,18 @@ const { readStdinEvent } = require('../adapters/claude-code/event');
 const { extractFacts, extractRationale, extractRationaleText } = require('../core/extract');
 const { emptyModel, mergeModel } = require('../core/state');
 const { writeNorthStarIfAbsent, firstSubstantiveUserMessage, readNorthStar } = require('../core/charter');
+const { readMode } = require('../core/read-only');
+const { dataDir } = require('../skills/explain-pr/scripts/data-dir');
+
+// A session in explain-pr's read-only mode has read a pull request written by someone else: nothing it says is
+// carried into later sessions. A mode file that cannot be read counts as the mode.
+function inReadOnlyMode(sid) {
+  try {
+    return readMode(dataDir(process.env, 'claude'), sid) !== null;
+  } catch {
+    return true;
+  }
+}
 
 function main() {
   const { sessionId, transcriptPath, lastAssistantMessage } = readStdinEvent('stop');
@@ -27,6 +39,11 @@ function main() {
   // parseDelta returns NeutralEntry[] (raw Claude JSONL mapped through the
   // adapter); extractFacts/extractRationale consume that shape directly.
   const { entries: neutralEntries, newOffset } = parseDelta(transcriptPath, model.offset || 0);
+  if (inReadOnlyMode(sid)) {
+    model.offset = newOffset;
+    fs.writeFileSync(jsonPath, JSON.stringify(model));
+    return;
+  }
   const facts = extractFacts(neutralEntries);
   const rationale = extractRationale(neutralEntries);
   // Also harvest tags from the just-finished turn via stdin, in case it has not

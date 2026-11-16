@@ -156,7 +156,8 @@ function renderCharter(northStar, model) {
 // Re-process any session whose model watermark lags its transcript (e.g. a session
 // abandoned before its Stop hook flushed the final turn). Skips the current session
 // and any transcript touched within ACTIVE_SKIP_MINUTES to avoid racing a live writer.
-function catchUpSessions(stateDir, { currentSid, now = Date.now(), readEntries } = {}) {
+// skip(sid) true leaves that session's transcript unread.
+function catchUpSessions(stateDir, { currentSid, now = Date.now(), readEntries, skip } = {}) {
   const projDir = path.dirname(stateDir);
   const activeCutoff = now - ACTIVE_SKIP_MINUTES * 60 * 1000;
   let names;
@@ -168,7 +169,7 @@ function catchUpSessions(stateDir, { currentSid, now = Date.now(), readEntries }
   for (const n of names) {
     if (!n.endsWith('.json')) continue;
     const sid = n.slice(0, -5);
-    if (sid === currentSid) continue;
+    if (sid === currentSid || (typeof skip === 'function' && skip(sid))) continue;
     const tpath = path.join(projDir, `${sid}.jsonl`);
     let tstat;
     try {
