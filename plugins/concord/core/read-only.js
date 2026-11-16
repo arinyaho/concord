@@ -9,8 +9,8 @@ function DENY_REASON(dir) {
 }
 
 function modeFile(dir, sessionId) {
-  const id = String(sessionId);
-  if (!id || id !== path.basename(id) || id === '.' || id === '..') return null;
+  const id = sessionId;
+  if (typeof id !== 'string' || !id || id !== path.basename(id) || id === '.' || id === '..') return null;
   return path.join(dir, 'modes', id);
 }
 
@@ -72,16 +72,16 @@ function allToolNames(list) {
   return Object.values(list).flat();
 }
 
-// Real path of p; for a path that does not exist yet, the real path of its longest
-// existing ancestor plus the remaining segments. null when a remaining segment is "..".
+// Real path of an absolute path p; for a path that does not exist yet, the real path of its
+// longest existing ancestor plus the remaining segments. Callers reject ".." segments first,
+// so path.resolve cannot fold one away.
 function resolveReal(p) {
-  if (typeof p !== 'string' || !p) return null;
+  if (typeof p !== 'string' || !path.isAbsolute(p)) return null;
   let cur = path.resolve(p);
   const rest = [];
   for (;;) {
     try {
-      const real = fs.realpathSync(cur);
-      return rest.some((s) => s === '..') ? null : path.join(real, ...rest.reverse());
+      return path.join(fs.realpathSync(cur), ...rest.reverse());
     } catch {
       const parent = path.dirname(cur);
       if (parent === cur) return null;
@@ -96,17 +96,27 @@ function within(p, realDir) {
   return real !== null && (real === realDir || real.startsWith(realDir + path.sep));
 }
 
-// path.resolve would fold ".." away, so check the raw segments first.
 function hasDotDot(p) {
   return p.split(/[\\/]/).includes('..');
 }
 
-function badPattern(p) {
-  return typeof p !== 'string' || path.isAbsolute(p) || hasDotDot(p);
+// A path-like input: a string, absolute, with no ".." segment, inside realDir after resolving links.
+function pathInside(p, realDir) {
+  return typeof p === 'string' && !hasDotDot(p) && within(p, realDir);
 }
 
-function rawDotDot(p) {
-  return typeof p !== 'string' || hasDotDot(p);
+// A glob pattern is allowed when it is relative, has no ".." segment, no brace or group
+// alternatives and no "~" (each can hide an outside location), and its literal leading
+// segments, resolved under base, stay inside realDir (a symlink there may leave it).
+function patternInside(pattern, base, realDir) {
+  if (typeof pattern !== 'string' || path.isAbsolute(pattern) || hasDotDot(pattern)) return false;
+  if (/[{}()]/.test(pattern) || pattern.startsWith('~')) return false;
+  const literal = [];
+  for (const seg of pattern.split(/[\\/]/)) {
+    if (/[*?[\]!+@]/.test(seg)) break;
+    literal.push(seg);
+  }
+  return within(path.join(base, ...literal), realDir);
 }
 
 function decideClaude(event, { preparedDir, allowedTools }) {
@@ -122,11 +132,11 @@ function decideClaude(event, { preparedDir, allowedTools }) {
   const name = event.tool_name;
   let ok = false;
   if (name === 'Read') {
-    ok = !rawDotDot(input.file_path) && within(input.file_path, realDir);
+    ok = pathInside(input.file_path, realDir);
   } else if (name === 'Glob') {
-    ok = !rawDotDot(input.path) && within(input.path, realDir) && !badPattern(input.pattern);
+    ok = pathInside(input.path, realDir) && patternInside(input.pattern, input.path, realDir);
   } else if (name === 'Grep') {
-    ok = !rawDotDot(input.path) && within(input.path, realDir) && (input.glob === undefined || !badPattern(input.glob));
+    ok = pathInside(input.path, realDir) && (input.glob === undefined || patternInside(input.glob, input.path, realDir));
   } else {
     ok = allowedTools.includes(name);
   }

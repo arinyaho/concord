@@ -62,6 +62,33 @@ test('decideClaude: Glob and Grep need a path inside (Review Focus 5)', () => {
   assert.equal(allow('Grep', { pattern: 'x' }), false);
 });
 
+test('decideClaude: patterns that name an outside place are denied', () => {
+  const { dir } = prepared();
+  const outside = tempDir('ro-out2-');
+  fs.symlinkSync(outside, path.join(dir, 'head', 'link'));
+  const o = { preparedDir: dir, allowedTools: [] };
+  const allow = (n, i) => ro.decideClaude(ev(n, i), o).allow;
+  assert.equal(allow('Glob', { pattern: 'link/*', path: `${dir}/head` }), false);
+  assert.equal(allow('Grep', { pattern: 'x', path: dir, glob: 'head/link/*' }), false);
+  assert.equal(allow('Grep', { pattern: 'x', path: `${dir}/head`, glob: 'link/*' }), false);
+  assert.equal(allow('Glob', { pattern: '{..,x}/*', path: dir }), false);
+  assert.equal(allow('Glob', { pattern: '{/etc/*,x}', path: dir }), false);
+  assert.equal(allow('Glob', { pattern: '~/*', path: dir }), false);
+  assert.equal(allow('Glob', { pattern: 'head/*.js', path: dir }), true);
+});
+
+test('decideClaude: relative paths are denied; a sibling sharing the prefix is outside', () => {
+  const { dir } = prepared();
+  const o = { preparedDir: dir, allowedTools: [] };
+  assert.equal(ro.decideClaude(ev('Read', { file_path: 'head/a.js' }), o).allow, false);
+  assert.equal(ro.decideClaude(ev('Glob', { pattern: '*', path: 'head' }), o).allow, false);
+  const evil = `${dir}-evil`;
+  fs.mkdirSync(evil);
+  fs.writeFileSync(path.join(evil, 'f'), 'x');
+  assert.equal(ro.decideClaude(ev('Read', { file_path: `${evil}/f` }), o).allow, false);
+  assert.equal(ro.decideClaude(ev('Read', { file_path: `${dir}/head/a.js` }), o).allow, true);
+});
+
 test('decideClaude: every other tool is denied; listed tools allowed exactly', () => {
   const { dir } = prepared();
   const o = { preparedDir: dir, allowedTools: ['mcp__atlassian__getJiraIssue'] };
@@ -108,6 +135,11 @@ test('mode files: write/read, prune by age, bad session ids', () => {
   assert.equal(ro.readMode(dir, 's1'), fs.realpathSync(pd));
   assert.equal(ro.readMode(dir, '../s1'), null);
   assert.throws(() => ro.writeMode(dir, '../s1', pd));
+  for (const bad of [undefined, null, '', 5]) {
+    assert.equal(ro.readMode(dir, bad), null);
+    assert.throws(() => ro.writeMode(dir, bad, pd));
+  }
+  assert.equal(fs.existsSync(path.join(dir, 'modes', 'undefined')), false);
   ro.writeMode(dir, 'old', pd);
   ro.writeMode(dir, 'recent', pd);
   const now = Date.now();
