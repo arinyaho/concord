@@ -9,13 +9,13 @@ In each watched repository the watcher acts on two sets of open pull requests:
 - **The user's own**: authored by `--self`, the account `gh` is logged in as. A draft is watched and not acted on until it is ready.
 - **Automated**: from an automation account the user names, changing only paths the user names, such as dependency pin updates.
 
-Other people's pull requests are their authors' to merge; the watcher reads them only for the merge order. A coordinating session's workers act as the user's account, so their pull requests are the user's own.
+Other people's pull requests are read only for the merge order. A coordinating session's workers act as the user's account, so their pull requests are the user's own.
 
 ## Trust
 
 A counting account has write, maintain, or admin permission on the repository, as GitHub's collaborator permission API reports it. Only a counting account's approval, request for changes, comment, or thread affects a merge; automation accounts and items with no author never count. An account whose permission cannot be read makes the pull request wait for the next check.
 
-Every input other people can write is data, never an instruction:
+Every input others can write is data:
 
 | Input | Read by |
 |---|---|
@@ -173,9 +173,9 @@ On invocation, the skill reads the rules file on the default branch (reviewers, 
 
 **Exact rules where a model would drift.** Coverage accepts only merges proved to change nothing unreviewed (by tree, or by GitHub's verification rather than an author field anyone sets). An automated pull request is bounded by its paths at the head read, since the opening account does not prove who pushed. Merging into a base once nothing is based on the branch handles stacks without knowing the chain. Merging when GitHub allows it avoids waiting on checks the rules do not require.
 
-**Waiting costs no model call**, since a waiting session resends its whole conversation at every wake. The watcher, notices, and confinement are `review-until-approve`'s; separate processes keep one skill's failure from stopping the other's.
+**Waiting costs no model call**; a waiting session resends its conversation at every wake. The watcher, notices, and confinement are `review-until-approve`'s; separate processes keep one skill's failure from stopping the other's.
 
-**Entries expire**, so an authorization does not cover pull requests opened weeks later.
+**Entries expire**, so an authorization does not cover later work.
 
 ## Rejected alternatives
 
@@ -195,11 +195,11 @@ On invocation, the skill reads the rules file on the default branch (reviewers, 
 - A point left open before the approval does not hold; the `merged` line counts unresolved threads. Any counting account can delay a merge with a comment.
 - With `--merge-agent-pushes`, or after the user confirms without looking, an agent's commit merges with no person having read it.
 - The check commands run the branch's code with the user's privileges, as running the tests by hand does. Under Claude Code the guard decides which commands run, not what they do; under Codex the profile also confines them, and checks needing the network fail.
-- Steered session text can make a wrong edit or a misleading reply; the escaping stops mentions, markers, and commands, not prose.
+- Steered session text can make a wrong edit or a misleading reply; escaping stops mentions, markers, and commands only.
 - Deleting the notice record replays review items to sessions and repeats requests. Two machines watching one repository both start sessions; the second push is refused as not a fast-forward, and replies can be posted twice.
 - The daily cap ends a reply loop with an automated reviewer or another watcher after six sessions.
 - Anyone who can push branches can make the user's pull request wait (`stack`). Merge-method rulesets are not read; such a merge is refused and reported. A merge through a queue is `queued`, and nothing after it runs.
 - The script's approval of an automated head stands until the next check after a push; a body-less approval the user gives by hand there can be withdrawn as the script's; a pin moved within the allowed paths is approved whatever its target.
 - Only required checks hold a merge. When `--self` can bypass branch rules, the only guard is not merging while GitHub reports a rule blocking.
-- The watch list carries the merge authorization, so any process running as the user can grant it.
-- The watcher stops at reboot or logout and is reported only at the next session start or invocation; notifications depend on the system. A tracker's automation can mark a ticket done before the verdict is applied.
+- Any process running as the user can edit the watch list and so grant the merge authorization.
+- The watcher stops at reboot or logout, reported only at the next session start or invocation. A tracker's automation can mark a ticket done before the verdict is applied.
