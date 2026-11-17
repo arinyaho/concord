@@ -78,3 +78,44 @@ test('hooks.json runs the guard on every PreToolUse', () => {
   assert.ok(entry);
   assert.match(entry.hooks[0].command, /\/hooks\/read-only-guard\.js/);
 });
+
+const { AGENT_MARKER, CONFINED_REASON } = require('../../core/read-only');
+const confinedDeny = (kind) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: CONFINED_REASON(kind) } });
+
+test('a confined agent (marked round directory under prs/) is denied every MCP tool, a listed one included', () => {
+  const { dir, inside } = setup();
+  fs.writeFileSync(path.join(path.dirname(inside), AGENT_MARKER), '');
+  for (const tool_name of ['mcp__probe__echo', 'mcp__probe__other']) {
+    assert.deepEqual(JSON.parse(run({ EXPLAIN_PR_DIR: dir }, JSON.stringify({ ...fixture('mcp', inside), tool_name })).stdout), confinedDeny('agent'), tool_name);
+  }
+  assert.deepEqual(JSON.parse(run({ EXPLAIN_PR_DIR: dir }, JSON.stringify(fixture('apply_patch', inside))).stdout), confinedDeny('agent'));
+  assert.deepEqual(run({ EXPLAIN_PR_DIR: dir }, JSON.stringify(fixture('bash', inside))), { stdout: '', status: 0 });
+});
+
+function sessionSetup() {
+  const home = fs.realpathSync(tempDir('crog-sess-'));
+  const root = path.join(home, 'concord', 'pr-to-merge', 'sessions');
+  const worktree = path.join(root, 's1', 'worktree');
+  const session = path.join(root, 's1', 'session');
+  for (const d of [worktree, session]) fs.mkdirSync(d, { recursive: true });
+  return { env: { CODEX_HOME: home, EXPLAIN_PR_DIR: '' }, home, worktree, session };
+}
+
+const patch = (cwd, ...files) => JSON.stringify({ ...fixture('apply_patch', cwd), tool_input: { command: `*** Begin Patch\n${files.map((f) => `*** Update File: ${f}\n@@\n+x`).join('\n')}\n*** End Patch` } });
+
+test('a headless session under the session-worktree root may patch inside its two directories only', () => {
+  const { env, home, worktree, session } = sessionSetup();
+  for (const files of [['a.txt'], [path.join(worktree, 'src', 'b.txt')], [path.join(session, 'result.json'), 'c.txt']]) {
+    assert.deepEqual(run(env, patch(worktree, ...files)), { stdout: '', status: 0 }, files.join());
+  }
+  for (const files of [['../../../git/config'], [path.join(home, 'concord', 'pr-to-merge', 'git', 'config')], ['a.txt', '/etc/hosts'], [path.join(path.dirname(worktree), '..', 's2', 'worktree', 'a')]]) {
+    assert.deepEqual(JSON.parse(run(env, patch(worktree, ...files)).stdout), confinedDeny('worktree'), files.join());
+  }
+  assert.deepEqual(JSON.parse(run(env, JSON.stringify({ ...fixture('apply_patch', worktree), tool_input: { command: 'no paths' } })).stdout), confinedDeny('worktree'));
+});
+
+test('a headless session is denied every MCP tool and may run shell commands', () => {
+  const { env, worktree } = sessionSetup();
+  assert.deepEqual(JSON.parse(run(env, JSON.stringify(fixture('mcp', worktree))).stdout), confinedDeny('worktree'));
+  assert.deepEqual(run(env, JSON.stringify(fixture('bash', worktree))), { stdout: '', status: 0 });
+});

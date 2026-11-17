@@ -8,13 +8,13 @@ const { extractFacts, extractRationale, extractRationaleText } = require('../cor
 const { emptyModel, mergeModel } = require('../core/state');
 const { writeNorthStarIfAbsent, firstSubstantiveUserMessage, readNorthStar } = require('../core/charter');
 const { readMode } = require('../core/read-only');
-const { dataDir } = require('../skills/explain-pr/scripts/data-dir');
+const { dataDir } = require('../runtime/data-dir');
 
 // A session in explain-pr's read-only mode has read a pull request written by someone else: nothing it says is
 // carried into later sessions. A mode file that cannot be read counts as the mode.
 function inReadOnlyMode(sid) {
   try {
-    return readMode(dataDir(process.env, 'claude'), sid) !== null;
+    return readMode(dataDir('explain-pr', 'claude'), sid) !== null;
   } catch {
     return true;
   }

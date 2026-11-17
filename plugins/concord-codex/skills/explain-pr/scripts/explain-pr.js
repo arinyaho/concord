@@ -10,14 +10,15 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { dataDir } = require('./data-dir');
+const { dataDir, ensureDataDir } = require('../../../runtime/data-dir');
+const { configuredServers, BARE, UNPARSED } = require('../../../runtime/codex-servers');
 
 // The Claude plugin keeps the shared module in core/, the Codex bundle in engine/.
 const core = require(['core', 'engine'].map((d) => path.join(__dirname, '..', '..', '..', d, 'read-only.js')).find((p) => fs.existsSync(p)));
 
 // A Codex session started from Claude Code's shell inherits CLAUDE_CODE_SESSION_ID; Codex's own marker wins.
 const harness = process.env.CLAUDE_CODE_SESSION_ID && !process.env.CODEX_THREAD_ID ? 'claude' : 'codex';
-const DATA = dataDir(process.env, harness);
+const DATA = dataDir('explain-pr', harness);
 const PRS = path.join(DATA, 'prs');
 
 const print = (v) => process.stdout.write(`${JSON.stringify(v)}\n`);
@@ -106,6 +107,7 @@ function prepare(args) {
   if (pos.length !== 2 || !/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^\d+$/.test(num)) usage('usage: explain-pr.js prepare <owner/repo> <number> [--checkout <path>]');
   const [owner, name] = repo.split('/');
 
+  ensureDataDir('explain-pr', harness);
   fs.mkdirSync(PRS, { recursive: true });
   // A temporary directory a day old belongs to a run that was killed, not to one still working. A prepared directory
   // 30 days old is deleted; a session whose mode names it is then denied everything. Mode files are never deleted.
@@ -250,7 +252,7 @@ function allow([tracker, ...tools]) {
   if (!tracker || !NAME.test(tracker) || !tools.length || tools.some((t) => !/^mcp__\S+$/.test(t))) usage('usage: explain-pr.js allow <tracker> <mcp__tool>...');
   const list = core.readAllowedTools(DATA);
   list[tracker] = [...new Set([...(list[tracker] || []), ...tools])];
-  fs.mkdirSync(DATA, { recursive: true });
+  ensureDataDir('explain-pr', harness);
   const file = path.join(DATA, 'allowed-tools.json');
   fs.writeFileSync(`${file}.tmp`, `${JSON.stringify({ trackers: list }, null, 2)}\n`);
   fs.renameSync(`${file}.tmp`, file);
@@ -266,32 +268,6 @@ const shq = (a) => `'${a.replace(/'/g, "'\\''")}'`;
 // server the user approved in advance cannot act in a session whose hook the user has not trusted; an id that is not a
 // bare TOML key gets no switch and is returned in skippedServers. The prompt names the skill as $concord:explain-pr, so
 // Codex loads SKILL.md into the session itself: the profile does not let the session read the plugin's files.
-const BARE = /^[A-Za-z0-9_-]+$/;
-const UNPARSED = '<unparsed mcp_servers form>';
-// The ids of [mcp_servers.<id>] and [mcp_servers.<id>.<sub>] table headers. Only headers are read, never values. Any
-// other form that defines servers (an [mcp_servers] table, a dotted or inline mcp_servers key), and a header-shaped
-// line inside a multi-line string, is reported as UNPARSED, so no value is ever printed.
-// ponytail: a line scan, not a TOML parser; a comment holding """ or ''' can mislead it, and then it reports UNPARSED.
-function configuredServers() {
-  let text;
-  try { text = fs.readFileSync(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'config.toml'), 'utf8'); } catch { return []; }
-  const ids = new Set();
-  let open = null; // the delimiter of the multi-line string a line is inside
-  for (const line of text.split(/\r?\n/)) {
-    const header = /^[ \t]*\[[ \t]*mcp_servers[ \t]*\.[ \t]*(.+?)[ \t]*\][ \t]*(?:#.*)?$/.exec(line);
-    if (open && (header || /mcp_servers/.test(line))) ids.add(UNPARSED);
-    else if (header) {
-      const q = /^("(?:[^"\\]|\\.)*"|'[^']*')/.exec(header[1]);
-      ids.add(q ? q[1] : header[1].split('.')[0].trim());
-    } else if (/^\s*(\[\s*mcp_servers\s*\]|mcp_servers\s*[.=])/.test(line)) ids.add(UNPARSED);
-    for (const [d] of line.matchAll(/"""|'''/g)) {
-      if (!open) open = d;
-      else if (d === open) open = null;
-    }
-  }
-  // UNPARSED last, after the ids, whatever order the lines came in.
-  return [...ids].filter((id) => id !== UNPARSED).concat(ids.has(UNPARSED) ? [UNPARSED] : []);
-}
 function launchCommand(dir) {
   const servers = configuredServers();
   // A server id may itself contain "__": a tool is matched to the longest configured id it starts with, and split at
@@ -332,7 +308,7 @@ function start(args) {
   }
   if (harness === 'codex') return print({ mode: 'off', ...launchCommand(dir) });
   try {
-    core.writeMode(DATA, process.env.CLAUDE_CODE_SESSION_ID, dir);
+    core.writeMode(DATA, process.env.CLAUDE_CODE_SESSION_ID, { kind: 'read', dir });
   } catch {
     usage('start: CLAUDE_CODE_SESSION_ID is not a usable session id');
   }

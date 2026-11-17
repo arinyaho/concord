@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { TextDecoder } = require('node:util');
 const { captureArtifactRoot, hashArtifact } = require('./bounded-artifact');
-const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
+const { crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('../../../../runtime/spawn-cross-platform');
 
 function sh(bin, args, opts = {}) {
   // opts.cwd is the reviewed repository at every call site in this file --

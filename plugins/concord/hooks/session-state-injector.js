@@ -4,12 +4,12 @@ const path = require('node:path');
 const { readStdinEvent } = require('../adapters/claude-code/event');
 const { readNorthStar, mergeSessions, renderCharter, catchUpSessions } = require('../core/charter');
 const { readMode } = require('../core/read-only');
-const { dataDir } = require('../skills/explain-pr/scripts/data-dir');
+const { dataDir } = require('../runtime/data-dir');
 
 // A session in explain-pr's read-only mode has read a pull request; its transcript is never folded into the state.
 function inReadOnlyMode(sid) {
   try {
-    return readMode(dataDir(process.env, 'claude'), sid) !== null;
+    return readMode(dataDir('explain-pr', 'claude'), sid) !== null;
   } catch {
     return true;
   }

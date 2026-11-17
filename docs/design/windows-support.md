@@ -1,6 +1,6 @@
 # Windows support
 
-Concord is designed to run on native Windows (cmd.exe or PowerShell, no WSL or Git Bash required) in four places: the hook manifests of each distribution, the agent launches and git calls of the `review-until-approve` round script, the session launches and worktree git calls of `pr-to-merge.js`, and JSONL and diff line parsing. Their spawn behavior is centralized in one helper, `spawn-cross-platform.js`, copied byte for byte into the Codex package with the skill, instead of each call site patching its own options.
+Concord is designed to run on native Windows (cmd.exe or PowerShell, no WSL or Git Bash required) in four places: the hook manifests of each distribution, the agent launches and git calls of the `review-until-approve` round script, the session launches and worktree git calls of `pr-to-merge.js`, and JSONL and diff line parsing. Their spawn behavior is centralized in one helper, `spawn-cross-platform.js` in the plugin's shared runtime directory, copied byte for byte into the Codex package at the same relative path, instead of each call site patching its own options.
 
 The recurring threat model is that Concord reviews an arbitrary, untrusted checkout. Nothing the reviewed repository contains (a committed `git.cmd`, a `node_modules/.bin` shim, a multi-line commit message, a branch name with shell metacharacters) may change which program runs or how its arguments are read.
 
@@ -45,7 +45,7 @@ Quoting does not stop cmd.exe from reading an embedded line break as a command s
 
 ## Bundle parity
 
-Drift tests assert that the Codex package's copy of the `review-until-approve` skill, `spawn-cross-platform.js` included, stays byte-identical to the shared skill.
+Drift tests assert that the Codex package's copies of the `review-until-approve` skill and of the shared runtime, `spawn-cross-platform.js` included, stay byte-identical to their sources.
 
 ## Non-goals
 
