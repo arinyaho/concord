@@ -36,10 +36,10 @@ const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 
 
 // ---- locks ----------------------------------------------------------------------------------------------------------
 
-// A process's start time as `ps` prints it in the C locale, so that a lock is not mistaken for a later process with the
+// A process's start time as `ps` prints it in the C locale and UTC, so that a lock is not mistaken for a later process with the
 // same id. Null where `ps` cannot tell (Windows, or a sandbox): then only the process id is compared.
 function startTime(pid) {
-  const r = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } });
+  const r = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } });
   return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
 }
 function running(holder) {

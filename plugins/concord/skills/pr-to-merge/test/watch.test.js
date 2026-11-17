@@ -57,6 +57,8 @@ test('watch add with the same or an earlier date does not extend an entry; a lat
   addEntry(c, entry('--authorized', TODAY, '--confirm', '--no-merge'));
   addEntry(c, { ...entry('--authorized', TODAY), authorized: day(-6) });
   assert.deepEqual([c.entries['acme/app'].confirm, c.entries['acme/app'].noMerge, c.entries['acme/app'].authorized], [true, true, TODAY]);
+  addEntry(c, { ...entryFromArgs(['acme/app#3', '--harness', 'claude', '--self', 'octocat', '--automated', 'x[bot]', '--automated-path', '**', '--authorized', TODAY]), authorized: day(-6) });
+  assert.deepEqual([c.entries['acme/app'].automated, c.entries['acme/app'].whole], [[], true], 'older words change nothing else');
   addEntry(c, entry('--authorized', TODAY));
   assert.deepEqual([c.entries['acme/app'].confirm, c.entries['acme/app'].noMerge], [true, false], 'words of the same date can authorize merging');
   assert.throws(() => entry('--authorized', day(-8)), /more than seven days old/);

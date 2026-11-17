@@ -211,6 +211,8 @@ test('a failed required check is run again once per head, then reported once as 
   const heldRun = world(repo([held]), { runs: { 77: { status: 'completed', conclusion: 'failure', run_attempt: 1 } } }).run(['acme/app']);
   assert.deepEqual(heldRun.writes, [['api', '-X', 'POST', 'repos/acme/app/actions/runs/77/rerun-failed-jobs']], 'a held PR is re-run too');
   assert.deepEqual(heldRun.lines, ['rerun acme/app#1 head head1: run 77', 'triage acme/app#1 head head1: held by comment']);
+  const refusedRun = world(repo([held]), { runs: { 77: { status: 'completed', conclusion: 'failure', run_attempt: 1 } }, writeError: { match: 'rerun-failed-jobs', message: 'HTTP 403: Forbidden' } }).run(['acme/app']);
+  assert.deepEqual(refusedRun.lines, ['triage acme/app#1 head head1: held by comment'], 'a refused re-run does not hide the hold');
 });
 
 const bump = (n, over = {}) => pr(n, { author: 'pin-bot', authorType: 'Bot', mergeStateStatus: 'BLOCKED', files: [{ filename: 'deps/core.pin' }], ...over });

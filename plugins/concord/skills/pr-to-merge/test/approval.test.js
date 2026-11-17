@@ -49,6 +49,7 @@ test('an approval whose body begins with a concord-approve line never counts, wh
   assert.deepEqual(world(repo(pr(1, { reviews: [agent] }))).run(['acme/app']).lines, []);
   assert.deepEqual(world(repo(pr(1, { reviews: [agent, approve('octo-dev', 'head1', 11)] }))).run(['acme/app']).lines, merged(1));
   assert.deepEqual(world(repo(pr(1, { reviews: [approve('monalisa', 'head1', 10, { body: '<!-- concord-approve:head1 -->' })] }))).run(['acme/app']).lines, [], 'without the space');
+  assert.deepEqual(world(repo(pr(1, { reviews: [approve('monalisa', 'head1', 10, { body: '\n<!-- concord-approve: head1 -->\nApproved.' })] }))).run(['acme/app']).lines, [], 'after a blank line');
   const quoted = approve('monalisa', 'head1', 10, { body: 'Approved; see <!-- concord-approve: x round:1 base:y -->' });
   assert.deepEqual(world(repo(pr(1, { reviews: [quoted] }))).run(['acme/app']).lines, merged(1), 'only a first line counts as the marker');
 });

@@ -106,19 +106,16 @@ function entryFromArgs(argv) {
 
 // Adds `entry` to the watch list. Numbers add to an entry of numbers; a whole repository replaces them. The date only
 // moves forward, so a `watch add` with the same or an earlier date does not extend an entry, and words older than the
-// entry's date cannot widen it to merging. `--confirm` stays until the entry is removed. Confirmations stay.
+// entry's date change nothing but can turn merging off. `--confirm` stays until the entry is removed. Confirmations stay.
 function addEntry(list, entry) {
   const key = entry.repo.toLowerCase();
   const old = list.entries[key];
-  const merged = { ...entry, confirmations: old?.confirmations || {} };
-  if (old) {
+  let merged = { ...entry, confirmations: old?.confirmations || {} };
+  if (old && authorizedAt(old.authorized) > authorizedAt(entry.authorized)) merged = { ...old, noMerge: old.noMerge || entry.noMerge };
+  else if (old) {
     merged.whole = old.whole || entry.whole;
     merged.numbers = merged.whole ? [] : [...new Set([...old.numbers, ...entry.numbers])].sort((a, b) => a - b);
     merged.confirm = old.confirm || entry.confirm;
-    if (authorizedAt(old.authorized) > authorizedAt(entry.authorized)) {
-      merged.authorized = old.authorized;
-      merged.noMerge = old.noMerge || entry.noMerge;
-    }
   }
   list.entries[key] = merged;
   return merged;
@@ -288,7 +285,7 @@ const isAuthor = (pr, login) => !pr.authorBot && login === pr.author;
 // An approval review-until-approve posted, whichever account posted it, never counts: a first line starting
 // `<!-- concord-approve:` (its earlier form) or a last non-blank line that is its `<!-- review-until-approve:state … -->` marker.
 function agentApproval(r) {
-  const lines = String(r.body || '').replace(/\r\n/g, '\n').replace(/\s+$/, '').split('\n');
+  const lines = String(r.body || '').replace(/\r\n/g, '\n').trim().split('\n');
   return lines[0].trimStart().startsWith('<!-- concord-approve:') || /^\s*<!-- review-until-approve:state\b.*-->\s*$/.test(lines[lines.length - 1]);
 }
 // Approvals by a counting account that is neither the author nor --self nor an agent's, the newest of them and of
@@ -533,7 +530,9 @@ function evaluate(pr) {
   if (pr.mergeable === 'CONFLICTING') say('conflict', 'conflict');
   const checks = checksOf(pr);
   const failed = checks.filter((c) => c.required && c.state === 'fail');
-  if (failed.length) rerun(pr, failed, say);
+  if (failed.length) {
+    try { rerun(pr, failed, say); } catch (err) { if (err instanceof RateLimited) throw err; warn(`${tag(pr)} re-run`, err); }
+  }
   if (!qualifiesWithoutHolds) return e;
   if (changesRequested) say('changes', 'changes requested');
   if (holds.length) say('held', `held by ${holds.join(', ')}`);
