@@ -32,7 +32,7 @@ No session holds a credential or reads outside its worktree and session director
 
 Invoking the skill over named repositories authorizes, there and in their tickets: watching, review requests, re-runs of failed jobs, the script's pushes, replies, and thread resolutions on the user's own pull requests, and ticket updates after a merge.
 
-Merging, updating a branch that is behind, and approving an automated pull request or withdrawing that approval also need the merge authorization: the user's words for the invocation naming the repositories, or a coordinating session's standing authorization recorded from such words. The skill records it in the repository's watch entry; an entry without it carries `--no-merge`, and the watcher reports as `ready` what it would merge. `pr-to-merge.js confirm OWNER/REPO#N <sha>`, which the skill runs only on the user's words in their session, confirms that head alone, the SHA the notice printed, and is the merge authorization for it even when the entry has `--no-merge`; under `--no-merge` it also authorizes updating that branch when it is behind. Any update moves the head and so voids an earlier confirmation. A conflict resolution is pushed under `--no-merge` too: it goes to the user's own branch and merges nothing. Automation accounts, paths, reviewer bots, and `--merge-without-confirm` come only from the user's own words, never from a coordinating session's standing authorization.
+Merging, updating a branch that is behind, and approving an automated pull request or withdrawing that approval also need the merge authorization: the user's words for the invocation naming the repositories, or a coordinating session's standing authorization recorded from such words. The skill records it in the repository's watch entry; an entry without it carries `--no-merge`, and the watcher reports as `ready` what it would merge. `pr-to-merge.js confirm OWNER/REPO#N <sha>`, which the skill runs only on the user's words in their session, confirms that head alone, the SHA the notice printed, and is the merge authorization for it even when the entry has `--no-merge`; under `--no-merge` it also authorizes updating that branch when it is behind. Any update moves the head and so voids an earlier confirmation. A conflict resolution is pushed under `--no-merge` too: it goes to the user's own branch and merges nothing. Automation accounts, paths, reviewer bots, and `--confirm` come only from the user's own words, never from a coordinating session's standing authorization.
 
 An entry and its authorization last until the user removes it or seven days after the user's words that authorized it: the user's own invocation, or for an entry a coordinating session writes, the words its standing authorization records. Only a new invocation by the user renews it; `watch remove` and `watch add` do not. Either removal is recorded as `unwatched`.
 
@@ -51,7 +51,7 @@ Concord's per-user state directory holds one notice list shared with `review-unt
 | `--reviewer-bot <account>` | An automated reviewer whose comments sessions answer in a public repository. Repeatable |
 | `--checkout <path>` | A local clone, needed for coverage and sessions. Without it only an approval on the head covers it, and session work is reported |
 | `--blocked-label <name>` | The user's hold label, default `blocked`. `review-blocked`, which `review-until-approve` owns, holds too and is not configurable |
-| `--merge-without-confirm` | On a base that requires no review, merge the user's own pull request without the user's `confirm` |
+| `--confirm` | On a base that requires no review, every head of the user's own pull request waits for the user's `confirm <sha>` |
 | `--no-merge` | No merge, branch update, or automated approval or withdrawal |
 | `--harness <claude or codex>`, `--model <name>` | For sessions: the harness the user invoked from, and the model the user asked for |
 
@@ -79,13 +79,13 @@ On each of the user's own pull requests that is ready for review, the script:
 4. **Re-runs a failed required check** once per head (GitHub's run attempt is the record) and hands a second failure to a session; a failed check that is not a workflow job is reported.
 5. **Hands a conflict with the base to a session.**
 
-GitHub reports that the base requires no review when the pull request's review decision is empty. There the pull request can merge without an approval once the user confirms its head. Unless the entry has `--merge-without-confirm`, every head waits: when nothing else stops it, the script brings the branch up to date (under `--no-merge` only after a confirmation, as above) and records `confirm <sha>`, and the user confirms or merges by hand. An outstanding review request holds such a pull request for 24 hours from the request, unless the user confirms.
+GitHub reports that the base requires no review when the pull request's review decision is empty. There the pull request merges without an approval once required checks pass and nothing holds it, whoever pushed the head. With `--confirm`, every head also waits: when nothing else stops it, the script brings the branch up to date (under `--no-merge` only after a confirmation, as above) and records `confirm <sha>`, and the user confirms or merges by hand. Either way, `confirm <sha>` is how the user releases holds there. An outstanding review request holds such a pull request for 24 hours from the request, unless the user confirms.
 
 ### Holds
 
 An approval or a confirmation settles what came before it. What a counting account other than `--self` adds after the newest covering approval, or on the path without approval after the user's newest confirmation, holds the merge; with neither, everything it added holds. Three things hold:
 
-1. **Later activity**: a thread comment, conversation comment, or non-approving review body newer than that time, by the later of its publish and edit times. It holds until a counting approval is given after it, or on a base that requires no review, with or without `--merge-without-confirm`, the user's confirmation of a head. No push, whoever made it, and no thread resolution releases it.
+1. **Later activity**: a thread comment, conversation comment, or non-approving review body newer than that time, by the later of its publish and edit times. It holds until a counting approval is given after it, or on a base that requires no review, with or without `--confirm`, the user's confirmation of a head. No push, whoever made it, and no thread resolution releases it.
 2. **A request for changes** as a counting account's latest review.
 3. **A hold label**: `blocked` (or `--blocked-label`) or `review-blocked`, compared without regard to case. The user holds with `blocked`; `review-until-approve` holds with `review-blocked` while its state records an open or asked blocker or cannot be read, because it usually posts as `--self` too.
 
@@ -99,7 +99,7 @@ When no counting approval covers the head, a pull request is automated when its 
 
 A pull request qualifies when:
 
-1. a counting approval covers the head, or it is automated and `--self` approved this head, or it is the user's own on a base that requires no review and its head is confirmed or the entry has `--merge-without-confirm`;
+1. a counting approval covers the head, or it is automated and `--self` approved this head, or it is the user's own on a base that requires no review and the entry has no `--confirm` or its head is confirmed;
 2. nothing holds it;
 3. no session works on it or was handed work for it in this check;
 4. GitHub reports it mergeable with no required check pending or failed;
@@ -123,7 +123,7 @@ Each notice is one line, recorded once per pull request and head (a `review` or 
 | `merged`, `queued`, `ready` | Merged, with base, method, head, checks not passed, and threads unresolved; accepted and not reported merged; with `--no-merge`, would merge |
 | `requested`, `no reviewer` | Reviewers requested; or none requested and the entry names none |
 | `stale approval` | The newest counting approver's login and commit, `asked again` or `already requested`, then the number of commits after it that keep no coverage, `commits after it not read` without the clone, or `not on the head's first-parent line` |
-| `confirm <sha>` | Waits for the user to confirm that head (under The user's own pull request) |
+| `confirm <sha>` | With `--confirm`, waits for the user to confirm that head (under The user's own pull request) |
 | `review`, `ticket` | Review activity or a ticket no session acts on, with who, kind, and link |
 | `session … done`, `… question`, `… failed`, `… cap` | A session ended; left a question; failed, timed out, or its push was refused; or the daily cap was reached |
 | `triage <repo>#<n> head <sha>: <reason>` | What stops the pull request where nothing handles it, with the head SHA a confirmation names: `held by` (`thread`, `comment`, `label`), `changes requested`, `conflict`, `a branch rule blocks the merge`, `required check still red after one re-run`, `required check failed and cannot be re-run`, `automated approval withdrawn` or `could not be withdrawn`, `behind its base` |
@@ -135,7 +135,7 @@ The notice record is also action state: it decides which review items went to a 
 
 ## Headless sessions
 
-**Launch.** The script checks out the pull request's head into a worktree under its session-worktree root in the state directory, never the user's checkout. The worktree has no `.git`: its git directory, fetched from the clone and holding the configuration, is the script's own and out of the session's reach. Every git command for it names both (`--git-dir=<own> --work-tree=<worktree>`) and runs with `-c core.hooksPath=<empty directory>` and `-c core.fsmonitor=false`, so nothing from the branch runs on either harness. Each session also has a session directory holding its inputs and its result file. The session starts with `review-until-approve`'s agent switches, except: the working directory is the worktree; under Claude Code the tools are `Read,Grep,Glob,Edit,Write` with [explain-pr.md](explain-pr.md)'s writable-worktree mode, confined to the worktree and session directory; under Codex the session keeps the shell, and the permissions profile allows reads and writes only in those two directories, with no network and the home and git directory unreadable, the hook denying patches outside them and MCP tools. No Codex session starts unless a pre-flight under the profile finds the home unreadable and the network refused. No token is passed; what nothing allows is refused, never prompted, and a session that cannot proceed fails. The mode file is removed when the session ends. The prompt carries this skill's session instructions and the paths, and marks the inputs as data.
+**Launch.** The script checks out the pull request's head into a worktree under its session-worktree root in the state directory, never the user's checkout. The worktree has no `.git`: its git directory, fetched from the clone and holding the configuration, is the script's own and out of the session's reach. Every git command for it passes `--git-dir=<own> --work-tree=<worktree>`, `-c core.hooksPath=<empty directory>`, and `-c core.fsmonitor=false`, so nothing from the branch runs on either harness. Each session also has a session directory holding its inputs and its result file. The session starts with `review-until-approve`'s agent switches, except: the working directory is the worktree; under Claude Code the tools are `Read,Grep,Glob,Edit,Write` with [explain-pr.md](explain-pr.md)'s writable-worktree mode, confined to the worktree and session directory; under Codex the session keeps the shell, and the permissions profile allows reads and writes only in those two directories, with no network and the home and git directory unreadable, the hook denying patches outside them and MCP tools. No Codex session starts unless a pre-flight under the profile finds the home unreadable and the network refused. No token is passed; what nothing allows is refused, never prompted, and a session that cannot proceed fails. The mode file is removed when the session ends. The prompt carries this skill's session instructions and the paths, and marks the inputs as data.
 
 **Input and result.** The script writes the inputs into the session directory: the review items with their replies, the failed job's log, the conflicting merge (the script starts `git merge` of the base, leaving the conflict in the worktree), or the closed issues' bodies and comments that Trust admits. The session edits files and writes the result file: per item a reply and whether to resolve the thread, questions with options and a recommendation, unfixed minor points, and per ticket a verdict. The script ignores what names no input item, commits with the git options above and a message from a fixed template and the item keys, never agent text (a conflict also needs no markers left), pushes as a fast-forward of the head it started from, then posts the replies escaped as `review-until-approve` publishes agent text, adding the mention itself, resolves the marked threads of automated reviewers, and asks each person who reviewed to review again, once per head. For a GitHub issue it closes a ticket whose criteria are met, or reopens one with a comment naming the unmet criterion; a ticket in another tracker is left in the report for the skill.
 
@@ -162,13 +162,13 @@ On invocation, the skill reads the rules file on the default branch (reviewers, 
 
 **An approval settles what came before it, and only a person releases a hold.** The approver saw that moment's threads; only later additions are unseen. A push never releases a hold, because no one can tell from GitHub which pushes a person made. Without an approval, the user's confirmation of a head takes the approval's place.
 
-**A head waits for the user on a base that requires no review.** There the user is the only person between an agent's commit and the base, and any head may carry one, so by default the user looks at the head that merges; `--merge-without-confirm` is for repositories where that is not wanted. The cost is one confirmation per merge, also for heads the user pushed; telling agent pushes apart instead would need a mark every agent writes, which nothing enforces. An outstanding review request means the user wanted a reviewer, so it holds for a day.
+**A base that requires no review lets the user's own pull request merge without one.** GitHub allows the merge, and the holds still let a teammate stop it. By default this includes a head an agent pushed under the user's account (`ticket-to-pr`, a headless session), which can then merge with no person having read it; `--confirm` closes that by making every head wait for the user. It applies to every head because nothing GitHub reports tells an agent's push from the user's. An outstanding review request holds for a day, since the user wanted a reviewer.
 
 **A session edits and the script acts.** A session reads text anyone can write, so it gets no credential, no git directory, no network, and under Claude Code no command. The script's git commands load no hook or configuration from the branch, so a steered edit to a test, build, or hook file runs only in CI or inside the Codex profile, and the worst outcome is a wrong edit that CI, the user, or reviewers see before a merge.
 
-**Outsiders' comments reach a session only in a private repository**, where every commenter has access; in a public one only counting accounts and named reviewer bots do.
+**Outsiders' comments reach a session only in a private repository**, where every commenter has access.
 
-**Asking the approver again is the next step, not a judgment**: only later commits made the approval stale, and a request grants nothing.
+**Asking the approver again needs no judgment**: later commits made the approval stale, and a request grants nothing.
 
 **Exact rules where a model would drift.** Coverage accepts only merges proved to change nothing unreviewed, by tree or GitHub's verification. Paths bound an automated pull request, since the opening account does not prove who pushed. Merging once nothing is based on the branch handles stacks.
 
@@ -178,25 +178,25 @@ On invocation, the skill reads the rules file on the default branch (reviewers, 
 
 ## Rejected alternatives
 
-- **Merging every approved pull request.** It takes the timing from authors who did not ask, and does nothing for the user's unapproved work.
+- **Merging every approved pull request.** It takes the timing from authors who did not ask.
 - **Never asking the approver.** Each stale approval costs the user a round trip.
 - **Releasing a hold on a push.** An agent's push would release a teammate's "do not merge".
-- **Sessions that run commands or checks.** Steered text could run anything as the user, through a test file as easily as a shell.
+- **Sessions that run checks with the user's privileges.** Steered text could run anything through a test file.
 - **Restarting the script from the session, or a nightly wrapper.** A full model turn per wake; a job per operating system.
 - **Releasing a hold when a thread is resolved.** A resolution has no time, and the author can resolve any thread.
-- **A session judging whether a point blocks.** A model's judgment would release a merge a counting account's comment holds.
+- **A session judging whether a point blocks.** A model would release what a counting account's comment holds.
 
 ## Residual exposure
 
-- A compromised account with write access can approve and have a pull request merged, or with `--merge-without-confirm` push to the user's branch and have it merged.
+- A compromised account with write access can approve and have a pull request merged, or, on a base that requires no review without `--confirm`, push to the user's branch and have it merged.
 - An item in the approval's or confirmation's second counts as settled. Where an empty review decision is wrong, GitHub still blocks the merge and the script reports it.
 - A point left open before the approval does not hold. Any counting account can delay a merge with a comment.
-- With `--merge-without-confirm`, or after the user confirms without looking, an agent's commit merges with no person having read it.
+- By default, on a base that requires no review, a head an agent pushed under the user's account (`ticket-to-pr`, a headless session) merges with no person having read it; `--confirm` closes that, unless the user confirms without looking.
 - A session's edit is first tested by CI after the push. Under Codex a session can run the branch's code inside the profile. The worktree's instruction files load as untrusted text.
-- Steered text can make a wrong edit or a misleading reply; escaping stops only mentions, markers, and commands.
+- Steered text can make a wrong edit or a misleading reply.
 - Deleting the notice record replays review items to sessions and repeats requests; deleting the session records resets the daily cap. Two machines watching one repository both start sessions; the second push is refused, and replies can be posted twice. A reply loop with an automated reviewer stops at the daily cap.
-- Anyone who can push branches can make the user's pull request wait (`stack`). Merge-method rulesets are not read; such a merge is refused and reported. A merge through a queue is `queued`, and nothing after it runs.
+- Anyone who can push branches can make the user's pull request wait (`stack`). Merge-method rulesets are not read; a refused merge is reported. A merge through a queue is `queued`, and nothing after it runs.
 - The script's approval of an automated head stands until the next check after a push; the user's own body-less approval there can be withdrawn as the script's; a pin moved within the allowed paths is approved whatever its target.
-- Only required checks hold a merge. When `--self` can bypass branch rules, the only guard is not merging while GitHub reports a rule blocking.
+- Only required checks hold a merge. When `--self` can bypass branch rules, the only guard is GitHub reporting a rule blocking.
 - Any process running as the user can edit the watch list and so grant the merge authorization.
 - The watcher stops at reboot or logout, reported only at the next session start or invocation. A tracker's automation can mark a ticket done before the verdict is applied.
