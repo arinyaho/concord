@@ -1,6 +1,6 @@
 # Windows support
 
-Concord is designed to run on native Windows (cmd.exe or PowerShell, no WSL or Git Bash required) in three places: the hook manifests of each distribution, the reviewer launches and checkout reads of the `review-until-approve` runner, and JSONL and diff line parsing. The runner's spawn behavior is centralized in one helper, `spawn-cross-platform.js`, copied byte for byte into the Codex package with the skill, instead of each call site patching its own options.
+Concord is designed to run on native Windows (cmd.exe or PowerShell, no WSL or Git Bash required) in four places: the hook manifests of each distribution, the agent launches and git calls of the `review-until-approve` round script, the session launches and worktree git calls of `pr-to-merge.js`, and JSONL and diff line parsing. Their spawn behavior is centralized in one helper, `spawn-cross-platform.js`, copied byte for byte into the Codex package with the skill, instead of each call site patching its own options.
 
 The recurring threat model is that Concord reviews an arbitrary, untrusted checkout. Nothing the reviewed repository contains (a committed `git.cmd`, a `node_modules/.bin` shim, a multi-line commit message, a branch name with shell metacharacters) may change which program runs or how its arguments are read.
 
@@ -19,9 +19,9 @@ The `commandWindows` strings follow three rules:
 
 ## Spawn helper
 
-`spawn-cross-platform.js` is applied to the `codex` and `claude` reviewer launches in `launch.js` and to the `git` calls of `target.js` and `fold.js`, all under `plugins/concord/skills/review-until-approve/scripts/runner/`. Those are the spawns whose working directory is the reviewed checkout before and while reviewers run. On anything other than `win32` it passes options and arguments through unchanged.
+`spawn-cross-platform.js` is applied to the `codex` and `claude` agent launches and the `git` calls of `review-until-approve.js round`, the spawns that run while a round's prepared checkout exists, and to the `codex` and `claude` session launches and the `git` calls in a session's worktree of `pr-to-merge.js`, the spawns whose working directory is that worktree. The session worktree is passed as `excludeDir`. On anything other than `win32` it passes options and arguments through unchanged.
 
-Other calls do not use the helper and pass a bare `git` or `gh` to `child_process` directly: the base resolution in `runner/review.js`, the committed-source reads in `runner/review-anchors.js`, the clone, fetch and object reads in `approve.js`, the GitHub polling in `watch.js`, and every `git` and `gh` call in `pr-to-merge.js`.
+Other calls do not use the helper and pass a bare `git` or `gh` to `child_process` directly: the GitHub reads and writes of `review-until-approve.js`, and the `gh` calls and the `git` calls in the user's clone of `pr-to-merge.js`.
 
 On `win32`:
 
@@ -36,12 +36,12 @@ Escaping test cases use hardcoded expected outputs computed from `cross-spawn`'s
 
 Quoting does not stop cmd.exe from reading an embedded line break as a command separator, and reviewer prompts and commit messages are routinely multi-line.
 
-- On `win32`, the runner writes the prompt to the child's stdin instead of argv: `codex exec -` (the stdin sentinel) and `claude -p` with no positional prompt. POSIX keeps the prompt on argv.
-- A no-op `'error'` listener is attached to the child's stdin before writing, so an `EPIPE` from a child that exits early fails the launch through the child's own error handling instead of crashing the review process.
+- On `win32`, the round script and `pr-to-merge.js` write the prompt to the child's stdin instead of argv: `codex exec -` (the stdin sentinel) and `claude -p` with no positional prompt. POSIX keeps the prompt on argv.
+- A no-op `'error'` listener is attached to the child's stdin before writing, so an `EPIPE` from a child that exits early fails the launch through the child's own error handling instead of crashing the round script.
 
 ## Line splitting
 
-`core/extract.js` and the runner's `launch.js` and `provider-failure.js` split on `/\r?\n/`. `JSON.parse` already tolerates a trailing `\r`, but a blank CRLF line split on `'\n'` alone becomes the truthy string `'\r'`, survives `.filter(Boolean)`, and then fails to parse. The transcript readers split on `'\n'` and are correct as they are, because each line is trimmed before parsing.
+`core/extract.js` and the round script's reading of agent output split on `/\r?\n/`. `JSON.parse` already tolerates a trailing `\r`, but a blank CRLF line split on `'\n'` alone becomes the truthy string `'\r'`, survives `.filter(Boolean)`, and then fails to parse. The transcript readers split on `'\n'` and are correct as they are, because each line is trimmed before parsing.
 
 ## Bundle parity
 
@@ -55,7 +55,7 @@ Drift tests assert that the Codex package's copy of the `review-until-approve` s
 ## Residual exposure
 
 - Nothing here has run on a real Windows host. Hook manifests are verified at the schema and content level (`commandWindows` is present, references the right script, and never shells out to `sh` or `bash`), stdin prompt delivery is verified by mocking `child_process.spawn`, and escaping is verified as a pure string transform. Whoever first runs the Codex plugin on native Windows performs the first real check of `commandWindows`.
-- The direct `git` and `gh` calls listed under Spawn helper resolve the program by name through Node's own lookup, without the helper's exclusion of the reviewed checkout; the ones in `runner/review.js` and `runner/review-anchors.js` run with the checkout as working directory. Whether that lookup can select a program from the checkout on Windows has not been checked.
+- The direct `git` and `gh` calls listed under Spawn helper resolve the program by name through Node's own lookup, without the helper's exclusion of the reviewed checkout. None of them runs with the checkout or a session worktree as working directory.
 - A `node` installed outside the two fixed locations, including most `nvm-windows` setups, is not found by the Codex hooks, which then do nothing.
 - The PowerShell path assumes Windows is installed on `C:`.
 - The resolved binary path is escaped but not quoted, as in `cross-spawn`, so a resolved path containing a space is not handled.

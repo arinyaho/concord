@@ -1,265 +1,202 @@
 # PR to merge
 
-`pr-to-merge` watches the open pull requests of one or more repositories and merges every pull request whose merge conditions hold exactly, as soon as GitHub allows the merge. It has two parts: a script that watches, merges, and reports everything it does not merge, without a model; and a skill that relays what the script reports to the user, answers reviews on the user's own pull requests, and runs the post-merge steps. It follows the rules in [workflow-state-and-stops.md](workflow-state-and-stops.md).
+`pr-to-merge` carries the user's own pull requests to their merge, and merges the automated pull requests of accounts and paths the user names. A background watcher checks the watched repositories every five minutes without a model: it requests reviews, re-runs failed jobs, updates branches, merges what qualifies as soon as GitHub allows it, and records notices. A confined headless agent session, which can read and edit files only in a worktree and its own directory, starts only for work that needs a model: answering reviews, fixing a failing check, resolving a merge conflict, and checking a merged pull request's tickets. In the user's session, the skill adds repositories to the watch list and relays the notices. It follows [workflow-state-and-stops.md](workflow-state-and-stops.md).
 
-It serves three uses with the same parts:
+## Scope
 
-- a coordinating session keeps it running over the pull requests its workers open;
-- a user starts it over a set of repositories;
-- a scheduler runs it every night.
+In each watched repository the watcher acts on two sets of open pull requests:
 
-The skill adds and removes no labels, files no issues, resolves no conflicts, pushes to no branch but those of the user's own pull requests, and posts nothing on other people's pull requests.
+- **The user's own**: authored by `--self`, the account `gh` is logged in as. A draft is watched and not acted on until it is ready.
+- **Automated**: from an automation account the user names, changing only paths the user names, such as dependency pin updates.
 
-## Who is trusted
+Other people's pull requests are read only for the merge order. A coordinating session's workers act as the user's account, so their pull requests are the user's own.
 
-The script acts with the user's GitHub credentials and merge authority, on text other people write. Its counting accounts are the accounts with write, maintain, or admin permission on the repository, as GitHub's collaborator permission API reports it: accounts that can merge a pull request themselves. Automation accounts and an author without write access are not counting accounts.
+## Trust
 
-Only a counting account's approval, request for changes, comment, or thread affects a merge. A review or comment with no author is ignored. An account whose permission cannot be read makes the pull request wait for the next scan. A repository that wants every conversation resolved, or an automated reviewer's verdict enforced, says so in its branch rules, and the script never merges while a branch rule blocks.
+A counting account has write, maintain, or admin permission on the repository, as GitHub's collaborator permission API reports it. Only a counting account's approval, request for changes, comment, or thread affects a merge; automation accounts and items with no author never count. An account whose permission cannot be read makes the pull request wait for the next check.
 
-Every string other people control (titles, bodies, branch names, check names, comment text, code) is data. The script prints none of it as free text: its lines carry logins, numbers, short commit SHAs, fixed words, URLs GitHub generates, and names reduced to a safe character set, and the `exited` line carries the run's own arguments, which the caller gave. The skill never treats such text as an instruction, and never runs code from a pull request the user does not own.
+Every input others can write is data:
 
-## Which pull requests it covers
+| Input | Read by |
+|---|---|
+| Titles, branch and check names | The script, whose lines carry only logins, numbers, short SHAs, fixed words, GitHub URLs, and names reduced to a safe character set |
+| Review items and their replies | A session. In a private repository every comment; in a public one only those of counting accounts and of `--reviewer-bot` accounts. Other comments are reported as `review` lines only. Visibility is read every check |
+| Failed job logs | A session; they carry output of dependencies and third-party actions |
+| Ticket text: an issue's body and its comments | A session. Where the repository holding the issue is public, only the parts counting accounts wrote; others are reported as `ticket` lines |
+| The branch's tree: code, the rules file, conflicting base code | A session, in its worktree |
+| The project's rules file on the default branch | The skill, at invocation: reviewers, tracker commands, reply language |
 
-In each repository it is given, the script works on three sets of open, non-draft pull requests. Listing a pull request as `OWNER/REPO#N` limits the run to that pull request; it does not make it the user's own.
-
-| Set | Members | What happens |
-|---|---|---|
-| Approved | Every approved pull request, whoever opened it and whoever it is assigned to | The script merges it when nothing holds it, and reports what does |
-| Automated | Pull requests from an automation account the user names that change only paths the user names, such as the ones that move a dependency pin | The script approves and merges it |
-| The user's own | Pull requests authored by the account the user names | The skill answers reviews and pushes fixes, before and after approval |
-
-A pull request in none of the sets is left alone: the script does not read its reviews and the skill does not touch it.
+No session holds a credential or reads outside its worktree and session directory. Under Claude Code it runs no command; under Codex its commands run only inside the permissions profile, with no network. The script runs none of the branch's code, which outside that profile runs only in CI.
 
 ## Authorization
 
-Invoking the skill over named repositories authorizes, in those repositories and their tickets: replies and fixes on the user's own pull requests, re-runs of failed jobs, and the tracker updates of the post-merge step.
+Invoking the skill over named repositories authorizes, there and in their tickets: watching, review requests, re-runs of failed jobs, the script's pushes, replies, and thread resolutions on the user's own pull requests, and ticket updates after a merge.
 
-Merging, updating a branch that is behind its base, and approving automated pull requests need the merge authorization in addition: the user's words for the run, naming the repositories, or for a scheduled run its configuration, which the user writes. A run without it uses `--no-merge`. The automation accounts and paths come only from the user's invocation or that configuration, never from a project's rules file.
+Merging, updating a branch that is behind, and approving an automated pull request or withdrawing that approval also need the merge authorization: the user's words for the invocation naming the repositories, or a coordinating session's standing authorization recorded from such words. The skill records it in the repository's watch entry; an entry without it carries `--no-merge`, and the watcher reports as `ready` what it would merge. `pr-to-merge.js confirm OWNER/REPO#N <sha>`, which the skill runs only on the user's words in their session, confirms that head alone, the SHA the notice printed, and is the merge authorization for it even when the entry has `--no-merge`; under `--no-merge` it also authorizes updating that branch when it is behind. Any update moves the head and so voids an earlier confirmation. A conflict resolution is pushed under `--no-merge` too: it goes to the user's own branch and merges nothing. Automation accounts, paths, reviewer bots, and `--confirm` come only from the user's own words, never from a coordinating session's standing authorization.
 
-The script never uses an administrator override and never bypasses a branch rule. The skill never rebases or force-pushes, and approves and merges nothing itself.
+An entry and its authorization last until the user removes it or seven days after the user's words that authorized it: the user's own invocation, or for an entry a coordinating session writes, the words its standing authorization records. Only a new invocation by the user renews it; `watch remove` and `watch add` do not. Either removal is recorded as `unwatched`.
 
-## The script
+Nothing uses an administrator override or bypasses a branch rule. A session holds no credential and cannot reach the git directory, so it cannot commit, push, approve, or merge; the script pushes only fast-forwards of the pull request's own branch.
 
-`pr-to-merge.js` takes repositories (`OWNER/REPO`) and single pull requests (`OWNER/REPO#N`) as arguments, with these options:
+## The watcher
+
+Concord's per-user state directory holds one notice list shared with `review-until-approve`. `pr-to-merge` has its own directory beside it with the watch list, the notice record, the lock, the session records, worktrees, and directories, and a log. `pr-to-merge.js watch add` writes an entry; `watch remove` deletes one.
 
 | Option | Meaning |
 |---|---|
-| `--self <login>` | Required. The account the script and the skill act as; the script refuses to start unless `gh` is logged in as this account. Its approvals never count, and nothing it posts holds a merge |
-| `--state <file>` | Required. The notice record: the notices already printed |
-| `--mine <login>` | Pull requests authored by this account are the user's own |
-| `--automated <account>` | An automation account whose pull requests can be automated: `x[bot]` or `app/x` for the app `x`, a plain login for a user account. May be repeated |
-| `--automated-path <glob>` | A path pattern that every file an automated pull request changes must match. May be repeated; required with `--automated` |
-| `--checkout OWNER/REPO=<path>` | A local clone of the repository, used to check the commits made after an approval |
-| `--blocked-label <name>` | The hold label. Default `blocked` |
-| `--no-merge` | Write nothing to GitHub: no merge, approval, dismissal of the script's own approval, branch update, or re-run. A pull request the script would merge, or an automated one it would approve and then merge, is reported as `ready`. With `--checkout` the script still fetches into the local clone |
-| `--interval <seconds>`, `--deadline <seconds>` | How often to scan, and when to exit |
+| `OWNER/REPO` or `OWNER/REPO#N` | A whole repository, or pull requests of it. Numbers add to an entry of numbers; a whole repository replaces it. Numbers limit the entry without making a pull request the user's own |
+| `--self <login>` | Required: the account `gh` is logged in as; a check finding another records `account` and skips the entry. Its approvals never count, and nothing it posts holds a merge |
+| `--automated <account>`, `--automated-path <glob>` | An automation account (`x[bot]` or `app/x` for an app, a plain login for a user) and the paths its pull requests may change. Repeatable; paths are required with an account |
+| `--reviewer <login or org/team>` | A reviewer the rules file names. Repeatable |
+| `--reviewer-bot <account>` | An automated reviewer whose comments sessions answer in a public repository. Repeatable |
+| `--checkout <path>` | A local clone, needed for coverage and sessions. Without it only an approval on the head covers it, and session work is reported |
+| `--blocked-label <name>` | The user's hold label, default `blocked`. `review-blocked`, which `review-until-approve` owns, holds too and is not configurable |
+| `--confirm` | On a base that requires no review, every head of the user's own pull request waits for the user's `confirm <sha>` |
+| `--no-merge` | No merge, branch update, or automated approval or withdrawal |
+| `--harness <claude or codex>`, `--model <name>` | For sessions: the harness the user invoked from, and the model the user asked for |
 
-A pull request's base is the branch it targets: the repository's default branch, another branch such as a release branch, or the head branch of another pull request.
+`watch add` starts the watcher unless the lock names a running one, outside any harness sandbox (a process keeps its sandbox for life), after the probe `review-until-approve` makes (a write in the state directory and a GitHub API read); where the probe fails, it prints the command for the user. The watcher is spawned detached and unreferenced, with nothing registered with the operating system. Every five minutes it runs one check as a child process from the newest installed copy the [state-cli-locator.md](state-cli-locator.md) locator finds. It exits when the watch list is empty, ends at reboot or logout, and runs beside `review-until-approve`'s watcher.
 
-### When a pull request counts as approved
+A check reads details only for pull requests of its sets; GitHub's hourly limit covers about fifty. A check short of quota stops and records `rate limited`.
 
-A pull request is approved when at least one counting account other than its author and other than `--self` has approved it. The approver need not be a requested reviewer.
+**Notices.** Both skills add their lines to the shared notice list and notify by the same rule: one system notification (Notification Center, `notify-send`, a PowerShell toast) per check that added a line that is not informational, with the count and no pull request text, and one after ten failed checks in a row. The plugin's `SessionStart` hook prints the list's pending lines, and a line for each skill whose watch list is not empty while no watcher runs. A `pr-to-merge` line stays pending until `watch status`, run by the skill in the user's session, shows it; headless sessions load no hooks and run no `watch status`, so they mark nothing shown. Invoking the skill restarts a stopped watcher.
 
-Two kinds of approval never count, because an agent made them: an approval by `--self`, and an approval whose review body begins with the line `<!-- concord-approve: <head> round:<n> base:<sha> -->`, which `review-until-approve` writes, whichever account posted it. A forged line can only remove an approval, so it is read from any account.
+## A check
 
-### When the approval covers the head
+### Approval and coverage
 
-An approval covers the current head when it was given on the head, or on an earlier commit followed, on the head's first-parent line, only by merge commits each of which is one of these:
+A pull request is approved when a counting account other than its author and `--self` approved it, requested or not. An approval by `--self`, or whose review body ends with a `<!-- review-until-approve:state … -->` line, which `review-until-approve` writes, never counts, whichever account posted it; a forged line can only remove an approval.
 
-1. A clean merge of the pull request's own base: its second parent is on the base branch, and its tree equals the tree git produces by merging its two parents without conflict. The default branch counts only when it is the base.
-2. A merge GitHub made for `--self`: a verified commit that GitHub's web flow committed and whose author is `--self`. The script's own branch updates, and its merges of one pull request into another's branch, produce these.
+An approval covers the head when it was given on the head, or on an earlier commit followed on the head's first-parent line only by merges that are either a clean merge of the pull request's own base (second parent on the base branch, tree equal to git's conflict-free merge of the parents) or a merge GitHub made for `--self` (verified, committed by GitHub's web flow, authored by `--self`). Without the clone only an approval on the head covers it.
 
-Coverage needs the local clone (`--checkout`). Without it only an approval on the head counts.
+### The user's own pull request
 
-### What holds a merge
+On each of the user's own pull requests that is ready for review, the script:
 
-An approval settles what came before it: the approver saw the pull request as it stood, with its threads and comments. Only what a counting account adds after the newest approval that covers the head holds the merge. Three things do:
+1. **Requests reviewers** when none is requested, GitHub's timeline shows none ever was, and no counting account has reviewed: the entry's reviewers, recorded as `requested`; with none in the entry, it records `no reviewer`. GitHub requests CODEOWNERS owners itself.
+2. **Asks the approver again** when the base requires a review and no counting approval covers the head: it requests a review from the newest counting approver unless already requested, once per head, recorded either way as `stale approval`. An approval later dismissed counts here.
+3. **Hands review items to a session** (under Trust for which), each once.
+4. **Re-runs a failed required check** once per head (GitHub's run attempt is the record) and hands a second failure to a session; a failed check that is not a workflow job is reported.
+5. **Hands a conflict with the base to a session.**
 
-1. **Later activity**: a comment in a review thread, a conversation comment, or a review body that is not an approval, from a counting account other than `--self`, newer than the newest covering approval. An item's time is the later of the time it was published and the time it was last edited, so a comment drafted in a pending review before the approval and published after it counts as after. The item holds until an approval that counts is given after it. Nobody's resolution of a thread releases it.
-2. **A request for changes**: a counting account's latest review requests changes.
-3. **The hold label**: `blocked`, or the name given with `--blocked-label`, compared without regard to case.
+GitHub reports that the base requires no review when the pull request's review decision is empty. There the pull request merges without an approval once required checks pass and nothing holds it, whoever pushed the head. With `--confirm`, every head also waits: when nothing else stops it, the script brings the branch up to date (under `--no-merge` only after a confirmation, as above) and records `confirm <sha>`, and the user confirms or merges by hand. Either way, `confirm <sha>` is how the user releases holds there. An outstanding review request holds such a pull request for 24 hours from the request, unless the user confirms.
 
-Threads and comments from before the approval do not hold, resolved or not, and neither does anything an automation account posts. The inline comments that are part of an approving review that covers the head do not hold either: they are that approval's own remarks. An automated pull request has no approval to count from, so every item of the first kind on it holds it.
+### Holds
 
-The user holds a merge with the label; what the user writes is written as `--self` and does not hold. The skill never adds or removes the label. Nothing the skill does releases a hold: only an approval does, and the skill cannot give one that counts.
+An approval or a confirmation settles what came before it. What a counting account other than `--self` adds after the newest covering approval, or on the path without approval after the user's newest confirmation, holds the merge; with neither, everything it added holds. Three things hold:
+
+1. **Later activity**: a thread comment, conversation comment, or non-approving review body newer than that time, by the later of its publish and edit times. It holds until a counting approval is given after it, or on a base that requires no review, with or without `--confirm`, the user's confirmation of a head. No push, whoever made it, and no thread resolution releases it.
+2. **A request for changes** as a counting account's latest review.
+3. **A hold label**: `blocked` (or `--blocked-label`) or `review-blocked`, compared without regard to case. The user holds with `blocked`; `review-until-approve` holds with `review-blocked` while its state records an open or asked blocker or cannot be read, because it usually posts as `--self` too.
+
+Items from before that time do not hold, nor anything an automation account posts, nor the covering approval's own inline comments. On an automated pull request every later-activity item holds. What the user writes, as `--self`, does not hold. Nothing here adds or removes a label.
 
 ### Automated pull requests
 
-The automated route applies whenever no counting approval covers the head, including when a person approved an older head. A pull request is automated when all of these hold:
+When no counting approval covers the head, a pull request is automated when its author matches an `--automated` account exactly (an app account only by a Bot login, a user account only by a user login), its head branch is in the repository, and every changed file, including a renamed file's old path, matches an `--automated-path`. The script approves such a head after reading the head again unchanged, and merges in a later check; each new head is approved again. When a head it approved is no longer automated, it dismisses its own approval (a body-less approval by `--self` on a named automation account's pull request) and records `triage`. Failed checks are re-run as on the user's own.
 
-1. Its author matches an `--automated` account exactly: `x[bot]` or `app/x` matches only an author GitHub reports as a Bot with login `x`, and a plain login matches only the user with that login.
-2. Its head branch is in the repository itself, not in a fork.
-3. Every file it changes matches one of the `--automated-path` patterns.
+### Qualifying and merging
 
-The script approves the head of an automated pull request, and merges it in a later scan. The approval is tied to the head whose files it read: after reading the changed files the script reads the head again, and approves only when it is unchanged. Because an approval by `--self` never counts, each new head is checked and approved again.
+A pull request qualifies when:
 
-The script withdraws its own approval. When a pull request it approved is not automated at its current head (a file outside the paths, an author or head repository that does not match), it dismisses its own approving review and prints a `triage` line. That pull request then needs a person's approval. The approval it takes for its own is an approving review by `--self` with an empty body on a pull request opened by a named automation account. When GitHub refuses the dismissal, the script prints `triage …: automated approval could not be withdrawn` once per head. With `--no-merge` it dismisses nothing.
+1. a counting approval covers the head, or it is automated and `--self` approved this head, or it is the user's own on a base that requires no review and the entry has no `--confirm` or its head is confirmed;
+2. nothing holds it;
+3. no session works on it or was handed work for it in this check;
+4. GitHub reports it mergeable with no required check pending or failed;
+5. GitHub does not report a branch rule blocking it (recorded as `triage` once per head).
 
-### When a pull request qualifies for merge
+The script approves an automated head when conditions 2 to 4 hold.
 
-A pull request qualifies when all of these hold on its current head:
+- It merges into its own base once no open pull request from the same repository, draft included, is based on its branch; otherwise it records `stack`. A chain merges from its last member down, one level per check. A pull request from the default branch is never a parent. A child neither the user's own nor automated is its author's to merge, and its parent waits.
+- The method is a merge commit when the head branch is the default branch or the base is another open pull request's branch, else a squash; when the repository does not allow it, the next allowed of squash, merge commit, and rebase.
+- Every merge names the expected head (`--match-head-commit`). `merged` is recorded only when GitHub reports the pull request merged; otherwise `queued`, once.
+- A branch GitHub reports as behind its base is updated at once with a merge commit.
 
-1. A counting approval covers the head, or the pull request is automated and `--self` has approved this head.
-2. Nothing holds it.
-3. GitHub reports it mergeable, with no check the branch rules require pending or failed. Checks the rules do not require may still be running.
-4. GitHub does not report the merge blocked by a branch rule, such as a rule that requires a particular reviewer. When it does, the script prints a triage line once per head and does not merge.
+After a merge, the watcher follows the runs still going on the merged head and those the merge starts on its base, re-runs a failed job once, and records a second failure as `post-merge failed`. A merge of the user's own pull request goes to a session for the ticket step.
 
-The script approves an automated head when conditions 2 and 3 hold, while GitHub may still report the merge blocked for lack of an approval.
+## Notices
 
-### Merging
-
-- A pull request merges into its own base, whatever branch that is, when it qualifies and no open pull request from the same repository is based on its branch; a draft counts, and a pull request from a fork does not. One that qualifies while such a pull request is open waits, and the script prints `stack <repo>#<n>: waits for #<m>` once per head. A chain of pull requests therefore merges from its last member down, one level per scan, and after each merge the pull request that received it waits for the required checks of its new head.
-- The repository's default branch is kept out of the parent role only. A pull request whose head branch is the default branch does not make the pull requests into the default branch its children, and does not wait for them. It is still a child of the pull request whose branch it is based on: with one pull request from the default branch into a release branch and one from the release branch into a production branch, the second waits for the first.
-- The method is a merge commit when the pull request's head branch is the default branch, or when its base is the head branch of an open pull request other than the default branch's; otherwise it is a squash. Squashing one long-lived branch into another would make later promotions repeat the changes. When the repository does not allow the method, the script uses one it allows: squash, then merge commit, then rebase for a squash; merge commit, then squash, then rebase for a merge commit. A squash or rebase into another pull request's branch adds commits that are not merges, so that pull request needs approval again.
-- Every merge names the head commit it expects (`--match-head-commit`), so a push between the check and the merge fails the merge instead of merging unreviewed commits.
-- `merged` is printed only when GitHub reports the pull request merged. When GitHub accepts the merge and does not report the pull request merged, the script prints `queued` once and leaves the pull request alone.
-- When GitHub reports a qualifying branch as behind its base, the script updates the branch at once with a merge commit and merges in a later scan.
-- When a required check has failed on a pull request that otherwise qualifies, the script runs the failed jobs again, once per head. GitHub's run attempt number records whether it did. A failed check that is not a workflow job cannot be run again and is reported.
-
-### Review activity on the user's own pull requests
-
-For a pull request that is the user's own, approved or not, review activity is a review, a comment in a review thread, or a conversation comment, from a counting account or an automation account, other than `--self`, that the notice record does not list. The script prints one `review` line for each such item.
-
-### What the script reports
-
-The script prints one line per event. Approved and automated pull requests get the same lines.
+Each notice is one line, recorded once per pull request and head (a `review` or `ticket` line once per item) while the notice record holds it. Which lines are informational is defined in [workflow-state-and-stops.md](workflow-state-and-stops.md).
 
 | Line | Meaning |
 |---|---|
-| `merged <repo>#<n> into <base> …` | A pull request was merged, with the method and the head. The line gives the number of checks that had not passed and the number of review threads still unresolved at the merge |
-| `queued <repo>#<n> …` | GitHub accepted the merge and did not report the pull request merged |
-| `approved <repo>#<n> (automated)` | The script approved an automated pull request |
-| `ready <repo>#<n> …` | With `--no-merge`: the script would merge the pull request, or for an automated one approve and then merge it |
-| `review <repo>#<n> …` | New review activity on one of the user's own pull requests: who, which kind, and its link |
-| `triage <repo>#<n> …: held by …` | Later activity or the label holds the pull request: one or more of `thread` (a comment in a review thread), `comment`, `label` |
-| `triage <repo>#<n> …: changes requested` | A counting account's latest review requests changes |
-| `triage <repo>#<n> …: conflict` | The pull request conflicts with its base |
-| `triage <repo>#<n> …: approved on an older head only: by <login> at <sha> …` | Commits after every approval include one that is neither kind of merge that keeps coverage, and the pull request is not automated. The line names the newest counting approval's account and commit, newest by the time it was submitted, then either the number of commits after it on the head's first-parent line that keep no coverage (`2 commits after it not covered`), `commits after it not read` without `--checkout`, or `not on the head's first-parent line` when that line does not reach the approved commit |
-| `triage <repo>#<n> …: a branch rule blocks the merge` | GitHub reports a branch rule blocking the merge |
-| `triage <repo>#<n> …: required check still red after one re-run` | The second run of the failed jobs also failed |
-| `triage <repo>#<n> …: required check failed and cannot be re-run` | A required check that is not a workflow job failed |
-| `triage <repo>#<n> …: automated approval withdrawn` | The script dismissed its own approval of a pull request that is not automated at its current head |
-| `triage <repo>#<n> …: automated approval could not be withdrawn` | GitHub refused that dismissal |
-| `triage <repo>#<n> …: behind its base`, `… required check failed` | With `--no-merge`, where the script would otherwise update the branch or run the failed jobs again |
-| `rerun <repo>#<n> …`, `synced <repo>#<n> …` | Failed jobs were run again; a branch was updated from its base |
-| `stack <repo>#<n>: waits for #<m>` | The pull request qualifies, and the open pull request `#<m>`, from the same repository, is based on its branch |
-| `merge failed …`, `sync failed …` | GitHub refused. The line gives the HTTP status when there is one and otherwise the word `refused`; GitHub's message goes to a log file next to the notice record, which the skill does not read |
-| `closed <repo>#<n>` | A pull request given as `OWNER/REPO#N` was closed without merging |
-| `exited <command>` | The last line of every run that does not end in a usage error: the run's own command line, quoted for `sh` |
+| `merged`, `queued`, `ready` | Merged, with base, method, head, checks not passed, and threads unresolved; accepted and not reported merged; with `--no-merge`, would merge |
+| `requested`, `no reviewer` | Reviewers requested; or none requested and the entry names none |
+| `stale approval` | The newest counting approver's login and commit, `asked again` or `already requested`, then the number of commits after it that keep no coverage, `commits after it not read` without the clone, or `not on the head's first-parent line` |
+| `confirm <sha>` | With `--confirm`, waits for the user to confirm that head (under The user's own pull request) |
+| `review`, `ticket` | Review activity or a ticket no session acts on, with who, kind, and link |
+| `session … done`, `… question`, `… failed`, `… cap` | A session ended; left a question; failed, timed out, or its push was refused; or the daily cap was reached |
+| `triage <repo>#<n> head <sha>: <reason>` | What stops the pull request where nothing handles it, with the head SHA a confirmation names: `held by` (`thread`, `comment`, `label`), `changes requested`, `conflict`, `a branch rule blocks the merge`, `required check still red after one re-run`, `required check failed and cannot be re-run`, `automated approval withdrawn` or `could not be withdrawn`, `behind its base` |
+| `approved`, `rerun`, `synced`, `stack … #<m>`, `post-merge failed` | Automated approval; failed jobs re-run; branch updated; qualifies but `#<m>` is based on its branch; a run of the merge failed again, with its link |
+| `merge failed`, `sync failed`, `request failed`, `post failed` | GitHub refused, with the HTTP status; the message goes to the log |
+| `closed`, `account`, `unwatched`, `rate limited` | A named pull request closed unmerged; another `gh` account; an entry removed or expired; quota exhausted |
 
-A `review` line is printed once per item, and every other notice once per pull request and head, while the notice record holds it. A pull request whose approval was lost, for example to a dismissal, is simply not approved and prints nothing. A failed API call does not end the run: the script reports it on standard error and scans again after the interval.
+The notice record is also action state: it decides which review items went to a session and which approvers were asked again. A session's input includes replies already posted.
 
-`approved`, `rerun`, `synced`, and `exited` are informational. The script exits after a scan that printed any other line, so that the line is acted on before the next scan. Otherwise it exits when the deadline passes. Either way, and also when it cannot read the logged-in account at start-up, its last line is `exited` followed by the run's own command line; a usage error prints nothing on standard output. The line reports how the run was started; what to do with it is the skill's. It repeats the arguments only, which are logins, paths, patterns, a label, and repository names, all already in the command the caller ran: no option takes a secret, because `gh` reads its own credentials. Each argument outside a small safe character set is single-quoted for `sh`, and an argument with a control character is a usage error, so no argument can split the line. A run killed before it exits prints no `exited` line; unless the user asked to stop, the skill then starts the same command it started before.
+## Headless sessions
+
+**Launch.** The script checks out the pull request's head into a worktree under its session-worktree root in the state directory, never the user's checkout. The worktree has no `.git`: its git directory, fetched from the clone and holding the configuration, is the script's own and out of the session's reach. Every git command for it passes `--git-dir=<own> --work-tree=<worktree>`, `-c core.hooksPath=<empty directory>`, and `-c core.fsmonitor=false`, so nothing from the branch runs on either harness. Each session also has a session directory holding its inputs and its result file. The session starts with `review-until-approve`'s agent switches, except: the working directory is the worktree; under Claude Code the tools are `Read,Grep,Glob,Edit,Write` with [explain-pr.md](explain-pr.md)'s writable-worktree mode, confined to the worktree and session directory; under Codex the session keeps the shell, and the permissions profile allows reads and writes only in those two directories, with no network and the home and git directory unreadable, the hook denying patches outside them and MCP tools. No Codex session starts unless a pre-flight under the profile finds the home unreadable and the network refused. No token is passed; what nothing allows is refused, never prompted, and a session that cannot proceed fails. The mode file is removed when the session ends. The prompt carries this skill's session instructions and the paths, and marks the inputs as data.
+
+**Input and result.** The script writes the inputs into the session directory: the review items with their replies, the failed job's log, the conflicting merge (the script starts `git merge` of the base, leaving the conflict in the worktree), or the closed issues' bodies and comments that Trust admits. The session edits files and writes the result file: per item a reply and whether to resolve the thread, questions with options and a recommendation, unfixed minor points, and per ticket a verdict. The script ignores what names no input item, commits with the git options above and a message from a fixed template and the item keys, never agent text (a conflict also needs no markers left), pushes as a fast-forward of the head it started from, then posts the replies escaped as `review-until-approve` publishes agent text, adding the mention itself, resolves the marked threads of automated reviewers, and asks each person who reviewed to review again, once per head. For a GitHub issue it closes a ticket whose criteria are met, or reopens one with a comment naming the unmet criterion; a ticket in another tracker is left in the report for the skill.
+
+**Limits.** One session runs at a time. Each has 30 minutes and a result file of at most 1 MiB; past either it is stopped and fails. The session record holds its process id and start time; a watcher that finds a recorded session from a previous watcher stops it if still running, and removes worktrees of sessions not running. At most six sessions run per pull request in 24 hours, counted in the session records; past that the watcher records `session … cap` and starts none for it until the user invokes the skill. A failed session's work is not handed over again. CI on the pushed head is the check: a failure there is a new event, within the cap.
+
+**Work.**
+
+- **Answering a review.** Verify each item against the code, fix what is right, and reply in at most two lines (verdict, reason or change), with file and line for a disagreement. An automated reviewer gets English and its thread marked for resolution; a person gets their language and keeps their thread. Review-body points get one conversation comment; a body called out of date is rewritten; unfixed minor points are listed, with no ticket filed.
+- **Fixing a failing check.** Read the log and fix the cause. A failure outside the change (a download, a registry, a runner, a timeout) goes in the report.
+- **Resolving a conflict.** Resolve the files. A conflict of intent rather than text goes in the report unpushed. The merge is not clean, so it loses coverage and the approver is asked again.
+- **After a merge.** For each ticket, a verdict: done when every acceptance criterion is met with evidence, otherwise in progress with the unmet criterion.
+
+A product decision, or anything else only the user can settle, goes in the result's questions; the session handles the rest.
 
 ## The skill
 
-In a session, the skill starts the script as one background command, acts on what it prints when it exits, and then starts the command of the `exited` line, after every run; the session is free for other work meanwhile. In the scheduled form the wrapper runs the script, as described under Scheduling.
-
-### Relaying
-
-For every `queued`, `ready`, `triage`, `stack`, `merge failed`, `sync failed`, and `closed` line, the skill tells the user which pull request it is and what the line says, as one line with the pull request's link. It does not act on the pull request. The informational lines other than `exited` need no action.
-
-For `approved on an older head only`, the skill also offers the user the two ways on: ask the approver to approve the current head again, or merge by hand. It merges, approves, and asks nothing itself, whatever the user answers.
-
-### Answering a review on the user's own pull request
-
-Read the items the `review` lines name, and nothing else on the pull request: not other threads, and not comments from accounts the script did not report. Verify each point against the code before acting on it. A repeated `review` line can name an item already answered; the skill's reply is then next to it, and nothing more is posted. When a `review` line and a `merged` line for the same pull request arrive together, the skill does not answer on the merged pull request or push to it.
-
-- Fix what is right, in ordinary commits.
-- A point that needs a product decision is put to the user with the options and a recommendation, as stop case 1 of [workflow-state-and-stops.md](workflow-state-and-stops.md). The other points are handled meanwhile.
-- A minor point the skill does not fix is listed in its reply and in its report to the user. The skill files no ticket for it.
-- Reply after the fix is pushed. A reply is at most three lines: the verdict (agreed, disagreed, or already handled), the reason or what changed, and the commit. A disagreement may be longer and gives its evidence with file and line.
-- A reply to an automated reviewer is in English, and the skill then resolves the thread.
-- A reply to a person is in that person's language and mentions them. The skill leaves the thread for its author to resolve.
-- Points made in a review body with no thread are answered together in one conversation comment.
-- When a point says the pull request body is out of date, rewrite those sections to match the current head.
-- After replying, request review again from each person who reviewed.
-
-### After a merge
-
-The first and third steps apply to every pull request the script merged; they are part of what merging authorizes. The second applies only to the user's own.
-
-1. Watch the workflow runs on the merged head that were still running at the merge, and the runs the merge commit starts on its base, each with one blocking shell wait that polls at a long interval; the model does not poll. When a job fails, read its log. Run it again once when the failure is external to the change (a download, a registry, a runner, a timeout). Report a job that fails again, and a failure caused by the merged change, to the user with the run link.
-2. For each ticket the merged pull request names, read the ticket's acceptance criteria. When every criterion is met with evidence, move the ticket to done. When one is not, move the ticket back to in progress and comment which criterion is unmet. The commands for the tracker come from the project's rules file.
-3. Report the merged pull request to the user as one line with its link.
-
-## Scheduling
-
-The scheduled form runs on the machine that holds the repository clones and the GitHub login. The operating system's scheduler starts a wrapper with the user's configuration, and the wrapper owns the loop:
-
-1. It deletes the notice record, once at the start of the night.
-2. It creates the directory of the notice record and runs the script. No model runs. The script exits with the usage status for a wrong option or a `--self` that is not the logged-in account, and with a different status when the logged-in account could not be read. On the usage status the wrapper stops and says so; on any other failure it waits and runs the script again, until its deadline.
-3. When the script prints a line other than an informational one, the wrapper starts one agent session with the skill and passes those lines to it as data, without the informational lines; the `exited` line is one of them, so the session is not given the script's options. The session acts on the lines and exits. It never starts the script.
-4. The wrapper runs the script again, until its deadline. On a night with nothing to report or answer, no session starts.
-
-Deleting the notice record each night means that everything still pending is reported again, which is the nightly report. The record holds only notices already printed, so deleting it changes nothing else.
-
-The session needs the `gh` login of `--self` with push access to each repository, and permission to run `gh` and `git` and to edit files in the clones of the user's own pull requests. It runs with whatever permission settings the user configures for it. The wrapper's command line is the user's configuration; leaving out `--no-merge` there is the merge authorization.
+On invocation, the skill reads the rules file on the default branch (reviewers, tracker commands, reply language), takes the merge authorization from the user's words or passes `--no-merge`, runs `watch add` per repository and `watch status`, and relays each notice as one line with a link. It puts a session's question to the user and acts on the answer; does itself the work of a failed session, a ticket in another tracker, or a repository without a clone; offers `confirm` with the printed SHA, running it only on the user's words; and runs `watch remove` on the user's stop.
 
 ## Why
 
-**Approval is the signal, not ownership.** A pull request a teammate approved is ready to go in whoever opened it, and one nobody approved is not the workflow's to touch. Covering every approved pull request lets one run clear a repository; leaving the unapproved ones alone keeps it out of work in progress.
+**The user's pull requests are the user's to drive**; another author's waits on that author's decisions.
 
-**Trust follows the authority to merge.** An account with write access can merge a pull request itself, so treating its approval and comments as meaningful gives it nothing it lacks. On a public repository anyone can comment, and an account outside the repository could otherwise hold a merge. Write access is read from the permission API because an organization member or an invited collaborator need not have it.
+**Trust follows the authority to merge.** A counting account could merge the pull request itself; membership does not imply write access, so the permission API is read.
 
-**An approval settles what came before it.** The approver decided with the threads and comments of that moment in view, including an automated reviewer's findings and the ones the author closed. Holding on them again overrides that decision with a rule. What a person with write access adds afterwards is something the approver has not seen, so it holds until an approver approves again. The rule needs no judgment and no record: it compares times and accounts that GitHub reports.
+**An approval settles what came before it, and only a person releases a hold.** The approver saw that moment's threads; only later additions are unseen. A push never releases a hold, because no one can tell from GitHub which pushes a person made. Without an approval, the user's confirmation of a head takes the approval's place.
 
-**Resolving a thread releases nothing.** GitHub records that a thread is resolved and by whom, and gives no time for it. A comment added to a thread that is already resolved would then be released by a resolution that came before it, and the skill's resolution of an automated reviewer's thread would release a counting account's reply inside it. An approval has a time and an account, so it is the one release.
+**A base that requires no review lets the user's own pull request merge without one.** GitHub allows the merge, and the holds still let a teammate stop it. By default this includes a head an agent pushed under the user's account (`ticket-to-pr`, a headless session), which can then merge with no person having read it; `--confirm` closes that by making every head wait for the user. It applies to every head because nothing GitHub reports tells an agent's push from the user's. An outstanding review request holds for a day, since the user wanted a reviewer.
 
-**An agent's approval does not count.** The script acts as the user's account, and so may `review-until-approve`, as that account or another of the user's. If such an approval counted, a pull request could merge with no person but the user's tooling having approved it.
+**A session edits and the script acts.** A session reads text anyone can write, so it gets no credential, no git directory, no network, and under Claude Code no command. The script's git commands load no hook or configuration from the branch, so a steered edit to a test, build, or hook file runs only in CI or inside the Codex profile, and the worst outcome is a wrong edit that CI, the user, or reviewers see before a merge.
 
-**Everything else is reported, not handled.** A conflict, a request for changes, a branch the script cannot update, and a lost approval each need a decision about someone's code, and the person who can make it is the author or the user.
+**Outsiders' comments reach a session only in a private repository**, where every commenter has access.
 
-**One rule covers stacks and long-lived branches.** A pull request merges into its own base when nothing open is based on its branch. A chain then merges from its last member down without the script knowing the chain, each level is checked on its own, and a pull request into a release or integration branch merges like any other.
+**Asking the approver again needs no judgment**: later commits made the approval stale, and a request grants nothing.
 
-**The merge happens when GitHub allows it.** The branch rules say which checks must pass before a merge. Waiting for the others delays every merge by the slowest job and, with many pull requests, keeps branches falling behind the base. The `merged` line says how many checks had not passed and how many threads were unresolved, so the user sees what was left.
+**Exact rules where a model would drift.** Coverage accepts only merges proved to change nothing unreviewed, by tree or GitHub's verification. Paths bound an automated pull request, since the opening account does not prove who pushed. Merging once nothing is based on the branch handles stacks.
 
-**The script distinguishes merges that keep coverage from other commits after an approval.** Counting every later commit would merge changes no approver read. Counting none would send every updated branch back for approval. A clean merge is checked by its tree, and only for the pull request's own base, since a merge of another branch brings in changes that were never reviewed for this one. A merge GitHub made for `--self` is proved by GitHub's verification, not by the commit's author: whoever makes a commit sets its author name and email.
+**Waiting costs no model call**; a waiting session resends its conversation at every wake. The watcher, notices, and confinement follow `review-until-approve`; separate processes isolate failures.
 
-**An automated pull request is bounded by the paths it changes, at the head that was read.** The account that opened a pull request does not prove who pushed its commits; anyone who can push to the automation's branch can add to it. Requiring every changed file to match the paths the user names bounds what such a push can get approved, reading the head again ties the approval to the files that were checked, and withdrawing the approval keeps it from outliving the check. The accounts and paths come from the user, because a rules file in the repository is text the repository's writers control.
-
-**The session reads only what the script names.** On the user's own pull requests the skill reads the items of the `review` lines, which come from counting accounts and automation accounts. A comment from any other account never reaches it.
-
-**The last line repeats the command line.** The instruction to start the script again sits in the skill text the session read at the start, and a run that printed only lines the session had already handled reads like the end of the work. The `exited` line is an event like the others: it reports that the run ended and how it was started, so the skill's instruction for it meets the session at the moment the run exits, together with the exact command, which the session then does not have to reconstruct from a context that may have been compacted. It is informational, so the scheduled wrapper, which owns its own loop, starts no session for it and never hands the script's options to a session.
-
-**A stale approval is reported with what the user decides on.** When an approval does not cover the head, the user chooses between asking the approver again and merging by hand, and the choice depends on who approved which commit and how much came after it. The line carries those, so the session neither looks them up nor guesses them. It counts only the commits that keep no coverage, the ones no approver read.
-
-**Waiting is not done by the model.** Waiting for approvals and checks is most of the elapsed time from a ready pull request to its merge, and the script does it without a model; a model acts only when there is something to relay or answer. After a merge, the wait for each workflow run is a single blocking shell command, not a sequence of model turns.
+**Entries expire**, so an authorization does not cover later work.
 
 ## Rejected alternatives
 
-- **Releasing later activity when an account with write access resolves the thread.** A reviewer then lets a pull request go by resolving their own thread, without approving again. A resolution has no time, so it also releases comments added to the thread after it, and the author can resolve any thread on their own pull request.
-- **Holding on every unresolved thread.** No pull request then merges with a point nobody closed. In a sample of 30 merged pull requests of one public repository, 13 had automated reviewers' threads that the author had resolved; counting only resolutions by other accounts, this rule holds every one of them, after a person approved.
-- **Counting automation accounts' threads and comments as holds.** An automated reviewer's finding then cannot be merged past. An automated reviewer comments on most pull requests and never approves, so its items are released only by a person resolving each one; a repository that wants that enforces it in its branch rules.
-- **Requiring a whole stack to qualify before any of it merges.** No part of a stack then lands without the rest. An approved pull request waits for others that may never qualify, and a pull request into a long-lived branch waits for that branch's own pull request.
-- **The skill judging whether a point blocks, and filing minor points as an issue.** An approved pull request with only minor comments then merges without waiting for a reviewer. It also lets a model's judgment release a merge that a counting account's comment holds, under the merge authorization, with no person reading the judgment.
-- **Markers in the skill's comments as a record of what it answered.** The script could then tell an answered comment from an unanswered one without a model. A marker is text the session writes, so a session that a comment steered can write one for a point it did not answer.
-- **The skill resolving conflicts on other people's pull requests.** An approved pull request then does not wait for its author after every merge that lands ahead of it. The session would read and push code it does not own, would need isolating from that branch's agent instruction files and settings, and its resolution would be read by no person before the merge.
-- **A record of merges to report later.** A merge through a queue would then be reported, and its post-merge steps run, when GitHub finishes it. The notice record would then decide what the post-merge steps run for, and deleting it each night would lose those merges.
-- **Waiting until every check has passed.** A failing check that the branch rules do not require is then never merged unread. It also makes each merge wait for jobs the repository has decided are not required.
-- **Counting only approvals that satisfy GitHub's review decision.** It follows the reviewers the repository requests and requires. It also discounts an approval from any other teammate with write access, who could merge the pull request themselves.
-- **Counting approvals by owners, members, and collaborators as GitHub labels each review.** It needs no permission request per approver. An organization member or an invited collaborator may have only read access.
-- **Attempting the merge so that GitHub names the blocking rule.** It gives a precise message. For an account that can bypass branch rules, the attempt succeeds and merges what the rule would have held.
-- **Recognizing an automated pull request by its account alone.** It needs no path list. It also approves whatever anyone who can push to the automation's branch adds.
-- **An agent platform's scheduled task in place of the operating system's scheduler.** It needs no machine of the user's to be running. It starts a model session every night to do what the script does without one, and it has neither the local clones the coverage check uses nor the user's GitHub login.
+- **Merging every approved pull request.** It takes the timing from authors who did not ask.
+- **Never asking the approver.** Each stale approval costs the user a round trip.
+- **Releasing a hold on a push.** An agent's push would release a teammate's "do not merge".
+- **Sessions that run checks with the user's privileges.** Steered text could run anything through a test file.
+- **Restarting the script from the session, or a nightly wrapper.** A full model turn per wake; a job per operating system.
+- **Releasing a hold when a thread is resolved.** A resolution has no time, and the author can resolve any thread.
+- **A session judging whether a point blocks.** A model would release what a counting account's comment holds.
 
 ## Residual exposure
 
-- An account with write access is trusted, so a compromised or malicious one can approve a pull request and have it merged.
-- A thread or comment from before the approval does not hold, so a pull request can merge with a point the approver left open, and with an automated reviewer's findings unanswered. The `merged` line gives the number of unresolved threads.
-- An item stamped in the same second as the newest covering approval is treated as part of what that approval settled.
-- A counting account's approving review on a commit that does not cover the head neither holds nor releases, whatever its body says.
-- A comment after the approval holds the merge until someone approves again, so any counting account can delay a merge with a comment. An approver who comments after approving, or another account with write access, must approve again. The user's own approval does not count, so when the user is the only one left to approve, the user gets a new approval from someone else or merges by hand.
-- An account that can push branches to the repository can open a pull request based on an approved pull request's branch, and that pull request then waits. The `stack` line reports it.
-- A long-lived branch other than the default branch that has its own open pull request is treated like a stack parent: pull requests into it land as merge commits, and its own pull request waits for them.
-- A ruleset that restricts the merge methods of a branch is not read, so a merge there can be refused and is then reported as `merge failed`.
-- On the user's own pull requests the session reads the items the `review` lines name, and after any merge the logs of failed jobs, while holding the user's `gh` login, which can push, label, approve, and merge. A session steered by that text can act outside the script: merge or approve directly, resolve a thread, remove a label, or create a merge through GitHub's API that the coverage rule then accepts as made by `--self`. What bounds it is the input: only items from counting accounts and automation accounts reach it, the script prints no other string as free text, on another person's pull request the skill reads nothing but those logs, and the session is told to treat all of it as data. These bound the input; they do not confine the session.
-- Between a push to an automated pull request and the next scan, the script's approval of the earlier head stands on GitHub. A repository that does not dismiss approvals on a push lets an account with write access merge in that time. Any person's approval has the same exposure.
-- A body-less approval the user gives by hand on a named automation account's pull request is treated as the script's own and can be withdrawn. An approval is not withdrawn while the pull request is a draft, or on a run that does not name the automation account.
-- An automated pull request that moves a pin inside the allowed paths is approved whatever the pin's new target is, including a target no person has reviewed.
-- A pull request merged through a merge queue is reported as `queued`, and the post-merge steps do not run for it.
-- A repository that dismisses approvals on a push loses the approval when the script updates a branch that is behind its base. The pull request then waits, unreported, for a new approval.
-- Only the checks the branch rules require hold a merge. A pull request can merge while another check is failing or still running, and in a repository whose rules require no checks, with no check finished.
-- When `--self` can bypass branch rules, the only guard is that the script does not merge while GitHub reports a rule blocking.
-- The scheduled run's configuration is a file the user writes, and it carries the merge authorization. Any process running as the user can edit it, and so grant that authorization.
-- A tracker's own automation can close a ticket when a pull request merges. The post-merge step corrects the status afterwards, so a ticket can read as done for the time between the merge and that step.
+- A compromised account with write access can approve and have a pull request merged, or, on a base that requires no review without `--confirm`, push to the user's branch and have it merged.
+- An item in the approval's or confirmation's second counts as settled. Where an empty review decision is wrong, GitHub still blocks the merge and the script reports it.
+- A point left open before the approval does not hold. Any counting account can delay a merge with a comment.
+- By default, on a base that requires no review, a head an agent pushed under the user's account (`ticket-to-pr`, a headless session) merges with no person having read it; `--confirm` closes that, unless the user confirms without looking.
+- A session's edit is first tested by CI after the push. Under Codex a session can run the branch's code inside the profile. The worktree's instruction files load as untrusted text.
+- Steered text can make a wrong edit or a misleading reply.
+- Deleting the notice record replays review items to sessions and repeats requests; deleting the session records resets the daily cap. Two machines watching one repository both start sessions; the second push is refused, and replies can be posted twice. A reply loop with an automated reviewer stops at the daily cap.
+- Anyone who can push branches can make the user's pull request wait (`stack`). Merge-method rulesets are not read; a refused merge is reported. A merge through a queue is `queued`, and nothing after it runs.
+- The script's approval of an automated head stands until the next check after a push; the user's own body-less approval there can be withdrawn as the script's; a pin moved within the allowed paths is approved whatever its target.
+- Only required checks hold a merge. When `--self` can bypass branch rules, the only guard is GitHub reporting a rule blocking.
+- Any process running as the user can edit the watch list and so grant the merge authorization.
+- The watcher stops at reboot or logout, reported only at the next session start or invocation. A tracker's automation can mark a ticket done before the verdict is applied.
