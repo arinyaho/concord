@@ -87,7 +87,7 @@ When a check fails, the pull request stays a draft:
 - Something concrete is missing that a worker can do (unfinished work, missing evidence, a fix CI names): start a successor with exactly that, at most once for the same gap.
 - A `blocker` is still open after the review's rechecks, or CI still fails on the head for a reason the unit could not fix: record it in the state document and on the ticket, tell the user in your report, and go on with the units that do not depend on it. Start no further successor for it.
 
-You do not merge. `pr-to-merge` carries the pull requests after they are opened, and merges only under a recorded merge authorization.
+You do not merge. `pr-to-merge` carries the pull requests after they are opened, and merges only under a recorded merge authorization: when you start it, pass the authorization's repositories and its date from the state document (`--authorized <date>`), never a later date, and `--no-merge` where none is recorded.
 
 ## 6. Report to the user
 

@@ -65,7 +65,7 @@ A check reads details only for pull requests of its sets; GitHub's hourly limit 
 
 ### Approval and coverage
 
-A pull request is approved when a counting account other than its author and `--self` approved it, requested or not. An approval by `--self`, or whose review body ends with a `<!-- review-until-approve:state … -->` line, which `review-until-approve` writes, never counts, whichever account posted it; a forged line can only remove an approval.
+A pull request is approved when a counting account other than its author and `--self` approved it, requested or not. An approval by `--self`, or whose review body ends with a `<!-- review-until-approve:state … -->` line, which `review-until-approve` writes, never counts, whichever account posted it; a forged line can only remove an approval. Nor does an approval whose body has `<!-- concord-approve:` on its first line, the marker of `review-until-approve`'s earlier form. Both exclusions are permanent.
 
 An approval covers the head when it was given on the head, or on an earlier commit followed on the head's first-parent line only by merges that are either a clean merge of the pull request's own base (second parent on the base branch, tree equal to git's conflict-free merge of the parents) or a merge GitHub made for `--self` (verified, committed by GitHub's web flow, authored by `--self`). Without the clone only an approval on the head covers it.
 

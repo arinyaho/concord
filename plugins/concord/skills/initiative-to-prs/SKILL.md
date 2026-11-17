@@ -101,7 +101,7 @@ Tick a unit on the parent issue when its `done` report passes your check.
 
 ## 8. Carry the pull requests
 
-Start the `pr-to-merge` skill over the repositories of the units. Pass `--no-merge` unless the state document records the user's merge authorization for that repository. It merges what qualifies, including stacks in order, and you relay what it reports.
+Start the `pr-to-merge` skill over the repositories of the units. Pass `--no-merge` unless the state document records the user's merge authorization for that repository; pass `--authorized` with the date of the user's words the state document records for that authorization (with `--no-merge`, the date of the user's words that started this initiative). A watch lasts seven days from that date; after that, ask the user again. Its background watcher merges what qualifies, including stacks in order, and you relay the lines it records.
 
 ## 9. Report
 
