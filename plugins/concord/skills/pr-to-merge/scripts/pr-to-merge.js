@@ -105,7 +105,8 @@ function entryFromArgs(argv) {
 }
 
 // Adds `entry` to the watch list. Numbers add to an entry of numbers; a whole repository replaces them. The date only
-// moves forward, so a `watch add` with the same or an earlier date does not extend an entry. Confirmations stay.
+// moves forward, so a `watch add` with the same or an earlier date does not extend an entry, and words older than the
+// entry's date cannot widen it to merging. `--confirm` stays until the entry is removed. Confirmations stay.
 function addEntry(list, entry) {
   const key = entry.repo.toLowerCase();
   const old = list.entries[key];
@@ -113,7 +114,11 @@ function addEntry(list, entry) {
   if (old) {
     merged.whole = old.whole || entry.whole;
     merged.numbers = merged.whole ? [] : [...new Set([...old.numbers, ...entry.numbers])].sort((a, b) => a - b);
-    if (authorizedAt(old.authorized) > authorizedAt(entry.authorized)) merged.authorized = old.authorized;
+    merged.confirm = old.confirm || entry.confirm;
+    if (authorizedAt(old.authorized) > authorizedAt(entry.authorized)) {
+      merged.authorized = old.authorized;
+      merged.noMerge = old.noMerge || entry.noMerge;
+    }
   }
   list.entries[key] = merged;
   return merged;
@@ -281,10 +286,10 @@ const counts = (pr, item) => Boolean(item.user?.login) && !isBot(item.user) && c
 const isAuthor = (pr, login) => !pr.authorBot && login === pr.author;
 
 // An approval review-until-approve posted, whichever account posted it, never counts: a first line starting
-// `<!-- concord-approve: ` (its earlier form) or a last line that is its `<!-- review-until-approve:state … -->` marker.
+// `<!-- concord-approve:` (its earlier form) or a last non-blank line that is its `<!-- review-until-approve:state … -->` marker.
 function agentApproval(r) {
-  const lines = String(r.body || '').replace(/\r\n/g, '\n').replace(/\n+$/, '').split('\n');
-  return lines[0].trimStart().startsWith('<!-- concord-approve: ') || /^\s*<!-- review-until-approve:state\b.*-->\s*$/.test(lines[lines.length - 1]);
+  const lines = String(r.body || '').replace(/\r\n/g, '\n').replace(/\s+$/, '').split('\n');
+  return lines[0].trimStart().startsWith('<!-- concord-approve:') || /^\s*<!-- review-until-approve:state\b.*-->\s*$/.test(lines[lines.length - 1]);
 }
 // Approvals by a counting account that is neither the author nor --self nor an agent's, the newest of them and of
 // dismissed approvals (for asking the approver again), and whether a counting account's latest review requests changes
@@ -375,10 +380,10 @@ function details(pr) {
 }
 const who = (item) => clean(item.user?.login);
 
-// The user's own pull request: each review, review-thread comment and conversation comment from a counting account or
-// an automation account, other than --self, as [notice key, line].
+// The user's own pull request: each review, review-thread comment and conversation comment by any account other than
+// --self, as [notice key, line]. No session acts on them yet, so every one is reported to the user.
 function activity(pr, reviews, d) {
-  const reported = (item) => Boolean(item.user?.login) && !self(item.user) && (isBot(item.user) || counts(pr, item));
+  const reported = (item) => Boolean(item.user?.login) && !self(item.user);
   const line = (id, text) => [`review:${tag(pr)}:${id}`, `review ${tag(pr)} head ${short(pr.head)}: ${text}`.trim()];
   const lines = [];
   for (const r of reviews) {
@@ -451,12 +456,10 @@ function automatedAtHead(pr) {
 const confirmationsOf = (pr) => opts.confirmations[String(pr.number)] || [];
 
 // What GitHub's mergeability allows: 'ok', 'approve' (an automated head --self has not approved), 'behind', or null.
-// A failed required check is run again here.
+// Failed required checks were handled before.
 function mergeStatus(pr, checks, needsApproval, say) {
-  const failed = checks.filter((c) => c.required && c.state === 'fail');
   const pending = checks.filter((c) => c.required && c.state === 'pending');
   if (pr.mergeState === 'BEHIND') return 'behind';
-  if (failed.length) { rerun(pr, failed, say); return null; }
   if (pending.length) return null; // wait for the required checks
   if (needsApproval && ['CLEAN', 'UNSTABLE', 'HAS_HOOKS', 'BLOCKED'].includes(pr.mergeState)) return 'approve';
   if (['CLEAN', 'UNSTABLE', 'HAS_HOOKS'].includes(pr.mergeState)) return 'ok';
@@ -475,38 +478,46 @@ function evaluate(pr) {
   const noReview = !pr.reviewDecision; // GitHub reports no review decision where the base requires no review
   const say = (kind, text) => notice(`${kind}:${tag(pr)}@${pr.head}`, `triage ${tag(pr)} head ${full(pr.head)}: ${text}`);
   const reviews = restPages(`repos/${pr.repo}/pulls/${pr.number}/reviews?per_page=100`);
+  if (!own) {
+    // A named automation account's pull request is in scope only while every file it changes is within the named
+    // paths. An approval the script gave (an approval by --self with no body) to a head that is not is withdrawn.
+    const atHead = automatedAtHead(pr);
+    if (atHead !== 'yes') {
+      const ownApprovals = reviews.filter((r) => r.state === 'APPROVED' && self(r.user) && !hasBody(r));
+      if (atHead === 'no' && ownApprovals.length && !opts.noMerge) withdraw(pr, ownApprovals, say);
+      return e;
+    }
+  }
   const { approvals, newestApprover, changesRequested } = approvalOf(pr, reviews);
   const { covers, uncovered } = coverage(pr);
   const covering = approvals.filter((a) => covers(a.commit_id));
   // The automated route applies whenever no counting approval covers the head; --self's approvals never count.
-  // The script's own approvals (it posts no body) on a pull request from an automation account.
-  const ownApprovals = automatedAccount(pr) ? reviews.filter((r) => r.state === 'APPROVED' && self(r.user) && !hasBody(r)) : [];
-  const atHead = !covering.length || ownApprovals.length ? automatedAtHead(pr) : 'no';
-  const automated = !covering.length && atHead === 'yes';
-  // An approval the script gave that the current head does not earn is withdrawn.
-  const withdraw = !opts.noMerge && ownApprovals.length > 0 && atHead === 'no';
+  const automated = !own && !covering.length;
   const confirmations = confirmationsOf(pr);
   e.confirmed = confirmations.some((c) => c.sha === pr.head);
-  const confirmedAt = Math.max(0, ...confirmations.map((c) => time(c.at)));
+  // Only a confirmation of this head settles what came before it: a push voids an earlier one.
+  const confirmedAt = Math.max(0, ...confirmations.filter((c) => c.sha === pr.head).map((c) => time(c.at)));
   // The user's own pull request on a base that requires no review merges without an approval.
   const unapproved = own && noReview && !covering.length;
-  const d = own || covering.length || automated ? details(pr) : null;
+  const qualifiesWithoutHolds = covering.length || automated || unapproved;
+  const d = details(pr);
   const reviewLines = own ? activity(pr, reviews, d) : [];
   const requests = own ? reviewRequests(pr) : null;
   const reviewed = own && reviews.some((r) => r.state !== 'PENDING' && !self(r.user) && counts(pr, r));
   const stale = own && !noReview && !covering.length ? newestApprover() : null;
-  // A hold is measured from the newest covering approval or, on a base that requires no review, the user's newest
-  // confirmation; with neither, everything a counting account added holds.
+  // A hold is measured from the newest covering approval or, on a base that requires no review, the user's
+  // confirmation of this head; with neither, everything a counting account added holds.
   const cutoff = Math.max(0, ...covering.map((a) => time(a.submitted_at)), noReview ? confirmedAt : 0);
-  const holds = covering.length || automated || unapproved ? holdsOf(pr, reviews, d, cutoff, covering) : [];
-  // An outstanding review request holds the user's own pull request on such a base for 24 hours, unless confirmed after it.
-  if (own && noReview && requests.outstanding && requests.at > confirmedAt && Date.now() - requests.at < DAY) holds.push('review request');
+  const holds = qualifiesWithoutHolds ? holdsOf(pr, reviews, d, cutoff, covering) : [];
 
   for (const [key, line] of reviewLines) notice(key, line);
   if (own && !requests.outstanding && !requests.ever && !reviewed) {
     const reviewers = opts.reviewers.filter((r) => lower(r) !== opts.self);
     if (!reviewers.length) notice(`noreviewer:${tag(pr)}`, `no reviewer ${tag(pr)} head ${short(pr.head)}`);
-    else if (tryRequest(pr, reviewers)) emit(`requested ${tag(pr)} head ${short(pr.head)}: ${reviewers.map(clean).join(', ')}`);
+    else if (tryRequest(pr, reviewers)) {
+      emit(`requested ${tag(pr)} head ${short(pr.head)}: ${reviewers.map(clean).join(', ')}`);
+      Object.assign(requests, { outstanding: true, at: Date.now() });
+    }
   }
   if (stale && !(`stale:${tag(pr)}@${pr.head}` in record.seen)) {
     const login = lower(stale.user.login);
@@ -515,23 +526,18 @@ function evaluate(pr) {
       notice(`stale:${tag(pr)}@${pr.head}`, `stale approval ${tag(pr)} head ${full(pr.head)}: by ${who(stale)} at ${short(stale.commit_id) || 'no commit'}, ${already ? 'already requested' : 'asked again'}, ${afterApproval(stale, uncovered)}`);
     }
   }
-  if (withdraw) {
-    try {
-      for (const r of ownApprovals) gh(['api', '-X', 'PUT', `repos/${pr.repo}/pulls/${pr.number}/reviews/${r.id}/dismissals`, '-f', 'message=This head is not an automated change.', '-f', 'event=DISMISS']);
-      say('withdrawn', 'automated approval withdrawn');
-    } catch (err) {
-      if (err instanceof RateLimited) throw err;
-      // Tried again on every check; reported once per head.
-      warn(`${tag(pr)} dismissal`, err);
-      say('unwithdrawn', `automated approval could not be withdrawn: ${refusal(err)}`);
-    }
-  }
-  if (!covering.length && !automated && !unapproved) return e;
+  // An outstanding review request holds the user's own pull request on such a base for 24 hours, unless this head was
+  // confirmed after it.
+  if (own && noReview && requests.outstanding && requests.at > confirmedAt && Date.now() - requests.at < DAY) holds.push('review request');
+  // A conflict is reported, and a failed required check run again, whether or not the pull request is approved.
+  if (pr.mergeable === 'CONFLICTING') say('conflict', 'conflict');
+  const checks = checksOf(pr);
+  const failed = checks.filter((c) => c.required && c.state === 'fail');
+  if (failed.length) rerun(pr, failed, say);
+  if (!qualifiesWithoutHolds) return e;
   if (changesRequested) say('changes', 'changes requested');
   if (holds.length) say('held', `held by ${holds.join(', ')}`);
-  if (pr.mergeable === 'CONFLICTING') say('conflict', 'conflict');
-  if (changesRequested || holds.length || pr.mergeable !== 'MERGEABLE') return e;
-  const checks = checksOf(pr);
+  if (changesRequested || holds.length || failed.length || pr.mergeable !== 'MERGEABLE') return e;
   e.notPassed = checks.filter((c) => c.state !== 'pass').length;
   e.unresolved = unresolvedThreads(pr);
   // With --confirm, every head of the user's own pull request on such a base waits for the user's confirmation.
@@ -539,6 +545,18 @@ function evaluate(pr) {
   const needsApproval = automated && !reviews.some((r) => r.state === 'APPROVED' && self(r.user) && r.commit_id === pr.head);
   e.status = mergeStatus(pr, checks, needsApproval, say);
   return e;
+}
+
+function withdraw(pr, approvals, say) {
+  try {
+    for (const r of approvals) gh(['api', '-X', 'PUT', `repos/${pr.repo}/pulls/${pr.number}/reviews/${r.id}/dismissals`, '-f', 'message=This head is not an automated change.', '-f', 'event=DISMISS']);
+    say('withdrawn', 'automated approval withdrawn');
+  } catch (err) {
+    if (err instanceof RateLimited) throw err;
+    // Tried again on every check; reported once per head.
+    warn(`${tag(pr)} dismissal`, err);
+    say('unwithdrawn', `automated approval could not be withdrawn: ${refusal(err)}`);
+  }
 }
 
 // Runs the failed jobs of each failed required check again, once per head: a workflow run already on its second

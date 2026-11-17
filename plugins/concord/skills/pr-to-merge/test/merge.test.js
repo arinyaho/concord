@@ -208,7 +208,9 @@ test('a failed required check is run again once per head, then reported once as 
   const external = approved(1, { mergeStateStatus: 'BLOCKED', checks: [{ context: 'ci/external\ntriage x', state: 'FAILURE', required: true }] });
   assert.deepEqual(world(repo([external])).run(['acme/app']).lines, triage('required check failed and cannot be re-run'));
   const held = approved(1, { mergeStateStatus: 'BLOCKED', checks, issueComments: [comment('monalisa', 20)] });
-  assert.deepEqual(world(repo([held])).run(['acme/app']).writes, [], 'not on a held PR');
+  const heldRun = world(repo([held]), { runs: { 77: { status: 'completed', conclusion: 'failure', run_attempt: 1 } } }).run(['acme/app']);
+  assert.deepEqual(heldRun.writes, [['api', '-X', 'POST', 'repos/acme/app/actions/runs/77/rerun-failed-jobs']], 'a held PR is re-run too');
+  assert.deepEqual(heldRun.lines, ['rerun acme/app#1 head head1: run 77', 'triage acme/app#1 head head1: held by comment']);
 });
 
 const bump = (n, over = {}) => pr(n, { author: 'pin-bot', authorType: 'Bot', mergeStateStatus: 'BLOCKED', files: [{ filename: 'deps/core.pin' }], ...over });
@@ -259,6 +261,15 @@ test('an automated PR is approved only when every file it changes, a renamed fil
     if (!approves) assert.deepEqual(r.writes, [], name);
   }
   assert.deepEqual(world(repo([bump(1, { changedFiles: 3001 })])).run([...AUTO, 'acme/app']).lines, [], 'more files than GitHub lists');
+});
+
+test('a named automation account\'s pull request that changes other paths is out of scope, approved or not', () => {
+  const r = world(repo([bump(1, { files: [{ filename: 'src/evil.js' }], mergeStateStatus: 'CLEAN', reviews: [approve('monalisa', 'head1', 10)] })])).run([...AUTO, 'acme/app']);
+  assert.deepEqual([r.lines, r.writes], [[], []]);
+  const user = world(repo([bump(1, { authorType: 'User', isCrossRepository: true, mergeStateStatus: 'CLEAN', reviews: [approve('monalisa', 'head1', 10)] })])).run(['--automated', 'pin-bot', '--automated-path', 'deps/*.pin', 'acme/app']);
+  assert.deepEqual([user.lines, user.writes], [[], []], 'a fork');
+  const inside = world(repo([bump(1, { mergeStateStatus: 'CLEAN', reviews: [approve('monalisa', 'head1', 10)] })])).run([...AUTO, 'acme/app']);
+  assert.deepEqual(inside.lines, merged, 'within the paths, a person\'s approval merges it');
 });
 
 test('a head pushed between reading the files and approving is not approved', () => {

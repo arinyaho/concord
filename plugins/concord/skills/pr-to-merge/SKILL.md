@@ -60,7 +60,7 @@ Relay each line in one line with the pull request's link, and act as the table s
 | `review …` | Answering a review on the user's own pull request |
 | `confirm …` | The user's own pull request waits for the user's confirmation of that head (`--confirm`). Offer `confirm` with the printed SHA; run it only on the user's words |
 | `stale approval …` | The newest approval no longer covers the head; the line names the approver, the commit, whether the script asked them again, and the commits after it. Tell the user; do nothing else |
-| `triage …: held by …` | Names what holds the merge: `thread` or `comment` (added by an account with write access after the newest covering approval or, on a base that requires no review, after the user's newest confirmation), `label`, or `review request` (an outstanding request on a base that requires no review, for 24 hours). A new approval by an account with write access releases a thread or comment; on a base that requires no review, so does the user's `confirm`. Resolving a thread or pushing releases nothing. Tell the user and offer `confirm` where it applies |
+| `triage …: held by …` | Names what holds the merge: `thread` or `comment` (added by an account with write access after the newest covering approval or, on a base that requires no review, after the user's confirmation of that head), `label`, or `review request` (an outstanding request on a base that requires no review, for 24 hours). A new approval by an account with write access releases a thread or comment; on a base that requires no review, so does the user's `confirm`. Resolving a thread or pushing releases nothing. Tell the user and offer `confirm` where it applies |
 | `triage …: conflict` | Tell the user. A conflict on the user's own pull request is the user's to resolve, or yours on the user's words, in ordinary commits on that branch |
 | `triage …: required check still red after one re-run` | Read the failed job's log on the user's own pull request and tell the user the cause; fix it on the user's words when the change caused it |
 | `triage …: changes requested`, `triage …: a branch rule blocks the merge`, `triage …: required check failed and cannot be re-run`, `triage …: automated approval withdrawn`, `triage …: automated approval could not be withdrawn`, `triage …: behind its base` | Tell the user what the line says. Do nothing else on that pull request |
@@ -84,7 +84,7 @@ This applies before and after approval. Read the items the `review` lines name, 
 - When a point says the pull request body is out of date, rewrite those sections to match the current head.
 - After replying, request review again from each person who reviewed.
 
-A push makes a new head: under `--confirm` it waits for the user's confirmation again.
+A push makes a new head: it voids the user's confirmation, so under `--confirm`, or where a confirmation released a hold, it waits for the user again.
 
 ## After a merge
 

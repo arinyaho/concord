@@ -52,6 +52,13 @@ test('watch add with the same or an earlier date does not extend an entry; a lat
   assert.equal(list.entries['acme/app'].authorized, day(-3), 'an earlier date');
   addEntry(list, entry('--authorized', TODAY));
   assert.equal(list.entries['acme/app'].authorized, TODAY, 'a later date');
+  // --confirm stays; older words cannot widen the entry to merging.
+  const c = { entries: {} };
+  addEntry(c, entry('--authorized', TODAY, '--confirm', '--no-merge'));
+  addEntry(c, { ...entry('--authorized', TODAY), authorized: day(-6) });
+  assert.deepEqual([c.entries['acme/app'].confirm, c.entries['acme/app'].noMerge, c.entries['acme/app'].authorized], [true, true, TODAY]);
+  addEntry(c, entry('--authorized', TODAY));
+  assert.deepEqual([c.entries['acme/app'].confirm, c.entries['acme/app'].noMerge], [true, false], 'words of the same date can authorize merging');
   assert.throws(() => entry('--authorized', day(-8)), /more than seven days old/);
   assert.throws(() => entry('--authorized', day(3)), /future/);
   assert.throws(() => entry(), /--authorized/);
@@ -95,6 +102,19 @@ test('watch add starts one detached watcher that outlives it, a second add start
   assert.equal(fs.statSync(path.join(w.base, 'notices')).mode & 0o777, 0o700);
   assert.ok(until(() => !alive(pid)), 'the watcher exited');
   assert.equal(lock(w), null, 'and released its lock');
+});
+
+test('a lock taken under another locale still reads as held', { skip: process.platform === 'win32' }, () => {
+  const dir = tempDir('ptm-lock-');
+  const file = path.join(dir, 'lock');
+  const holder = spawn(process.execPath, ['-e', `require(${JSON.stringify(require.resolve('../scripts/watcher'))}).takeLock(${JSON.stringify(file)}); setTimeout(() => {}, 20000)`], { env: { ...process.env, LC_ALL: 'ko_KR.UTF-8', LANG: 'ko_KR.UTF-8' }, stdio: 'ignore' });
+  try {
+    assert.ok(until(() => fs.existsSync(file)));
+    assert.equal(runtime.running(runtime.readJson(file, null)), true);
+    assert.equal(runtime.takeLock(file), false);
+  } finally {
+    holder.kill();
+  }
 });
 
 test('a failed probe starts nothing and prints the command for the user to run', () => {

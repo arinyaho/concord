@@ -36,32 +36,39 @@ const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 
 
 // ---- locks ----------------------------------------------------------------------------------------------------------
 
-// A process's start time as `ps` prints it, so that a lock is not mistaken for a later process with the same id.
-// Without `ps` (Windows) it is empty, and only the process id is compared.
+// A process's start time as `ps` prints it in the C locale, so that a lock is not mistaken for a later process with the
+// same id. Null where `ps` cannot tell (Windows, or a sandbox): then only the process id is compared.
 function startTime(pid) {
-  const r = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' });
-  return r.status === 0 ? r.stdout.trim() : '';
+  const r = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } });
+  return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
 }
 function running(holder) {
   if (!holder || !Number.isInteger(holder.pid)) return false;
   try { process.kill(holder.pid, 0); } catch (e) { if (e.code !== 'EPERM') return false; }
-  return startTime(holder.pid) === holder.start;
+  const start = startTime(holder.pid);
+  return start === null || holder.start === null || start === holder.start;
 }
-// Takes the lock file for this process, taking it over only from a holder that is not running.
+// Takes the lock file for this process, taking it over only from a holder that is not running. The file appears whole
+// (a hard link of a written file), so no reader sees it empty.
 // ponytail: two processes taking over the same dead lock at the same instant can both win; a lock per check would close it.
 function takeLock(file) {
-  const me = { pid: process.pid, start: startTime(process.pid) };
-  for (let i = 0; i < 2; i++) {
-    try {
-      fs.writeFileSync(file, JSON.stringify(me), { flag: 'wx', mode: 0o600 });
-      return readJson(file, {}).pid === process.pid;
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
+  const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}`;
+  fs.writeFileSync(tmp, JSON.stringify({ pid: process.pid, start: startTime(process.pid) }), { mode: 0o600 });
+  try {
+    for (let i = 0; i < 2; i++) {
+      try {
+        fs.linkSync(tmp, file);
+        return true;
+      } catch (e) {
+        if (e.code !== 'EEXIST') throw e;
+      }
+      if (running(readJson(file, null))) return false;
+      fs.rmSync(file, { force: true });
     }
-    if (running(readJson(file, null))) return false;
-    fs.rmSync(file, { force: true });
+    return false;
+  } finally {
+    fs.rmSync(tmp, { force: true });
   }
-  return false;
 }
 const releaseLock = (file) => { if (readJson(file, {}).pid === process.pid) fs.rmSync(file, { force: true }); };
 

@@ -125,6 +125,30 @@ test('holds: a push does not release a later comment; on a base that requires no
   assert.deepEqual(w.run(['acme/app']).lines, [`triage acme/app#1 head ${'3'.repeat(40)}: held by comment`]);
 });
 
+test('a pull request whose reviewer the check requests is held by that request in the same check', () => {
+  const w = world(repo([open({ timeline: [] })]));
+  const r = w.run(['--reviewer', 'monalisa', 'acme/app']);
+  assert.deepEqual(r.lines, ['requested acme/app#1 head 11111111: monalisa', `triage acme/app#1 head ${H1}: held by review request`]);
+  assert.deepEqual(merges(r), []);
+});
+
+test('a confirmation of another head releases nothing', () => {
+  const w = world(repo([open({ issueComments: [comment('octo-dev', 20)] })]));
+  w.run(['acme/app']);
+  confirm(w, H2);
+  const r = w.run(['acme/app']);
+  assert.deepEqual([r.lines, merges(r)], [[], []]);
+  w.update((x) => { x.repos['acme/app'].prs[0].headRefOid = H2; });
+  assert.deepEqual(w.run(['acme/app']).lines, [merged(1, H2)], 'the confirmed head, once pushed');
+});
+
+test('a conflict is reported and a failed required check run again on the user\'s own pull request before any approval', () => {
+  const p = pr(1, { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY', checks: [{ name: 'build', required: true, conclusion: 'FAILURE', runId: 7 }] });
+  const r = world(repo([p], { runs: { 7: { status: 'completed', conclusion: 'failure', run_attempt: 1 } } })).run(['acme/app']);
+  assert.deepEqual(r.lines, ['triage acme/app#1 head head1: conflict', 'rerun acme/app#1 head head1: run 7']);
+  assert.deepEqual(r.writes, [['api', '-X', 'POST', 'repos/acme/app/actions/runs/7/rerun-failed-jobs']]);
+});
+
 test('an outstanding review request holds the user\'s own pull request on a base that requires no review for 24 hours, unless confirmed after it', () => {
   const ago = (hours) => new Date(Date.now() - hours * 3600 * 1000).toISOString();
   const requested = (hours) => open({ requested: ['monalisa'], timeline: [{ event: 'review_requested', created_at: ago(hours) }] });

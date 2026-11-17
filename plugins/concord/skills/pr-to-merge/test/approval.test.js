@@ -48,13 +48,14 @@ test('an approval whose body begins with a concord-approve line never counts, wh
   const agent = approve('monalisa', 'head1', 10, { body: '<!-- concord-approve: head1 round:2 base:abc -->\nApproved.' });
   assert.deepEqual(world(repo(pr(1, { reviews: [agent] }))).run(['acme/app']).lines, []);
   assert.deepEqual(world(repo(pr(1, { reviews: [agent, approve('octo-dev', 'head1', 11)] }))).run(['acme/app']).lines, merged(1));
+  assert.deepEqual(world(repo(pr(1, { reviews: [approve('monalisa', 'head1', 10, { body: '<!-- concord-approve:head1 -->' })] }))).run(['acme/app']).lines, [], 'without the space');
   const quoted = approve('monalisa', 'head1', 10, { body: 'Approved; see <!-- concord-approve: x round:1 base:y -->' });
   assert.deepEqual(world(repo(pr(1, { reviews: [quoted] }))).run(['acme/app']).lines, merged(1), 'only a first line counts as the marker');
 });
 
 test('an approval whose body ends with a review-until-approve state line never counts, whoever posted it, with or without a trailing newline', () => {
   const state = '<!-- review-until-approve:state eyJyb3VuZCI6MX0 -->';
-  for (const body of [`No findings.\n\n${state}`, `No findings.\n${state}\n`, `No findings.\r\n${state}\r\n`, state]) {
+  for (const body of [`No findings.\n\n${state}`, `No findings.\n${state}\n`, `No findings.\r\n${state}\r\n`, `No findings.\n${state}\n  \n`, state]) {
     for (const login of ['monalisa', 'octo-dev']) {
       const r = world(repo(pr(1, { reviews: [approve(login, 'head1', 10, { body })] }))).run(['acme/app']);
       assert.ok(!r.lines.some((l) => l.startsWith('merged')), JSON.stringify(body));

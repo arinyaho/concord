@@ -16,14 +16,14 @@ test('another author\'s pull request is never acted on, approved or not: no line
   assert.ok(!r.calls.some((c) => c.some((x) => /pulls\/1\/|issues\/1\//.test(x))), JSON.stringify(r.calls));
 });
 
-test('review activity on a PR the user authored is printed once per item, from counting accounts and bots, approved or not', () => {
+test('review activity on a PR the user authored is printed once per item, from any account but --self, approved or not', () => {
   const thread = threadComment('monalisa', { html_url: 'https://github.com/acme/app/pull/1#discussion_r7' });
   const own = pr(1, {
     author: 'octocat',
     reviews: [review('monalisa', 'CHANGES_REQUESTED', 'head1', 5, { body: 'see threads', html_url: 'https://github.com/acme/app/pull/1#pullrequestreview-1' }), review('monalisa', 'COMMENTED', 'head1', 6), review('octocat', 'COMMENTED', 'head1', 7, { body: 'mine' })],
     comments: [thread, threadComment('octocat', { in_reply_to_id: thread.id })],
     threads: [{ resolved: false, root: thread.id }],
-    issueComments: [comment('ci-bot[bot]', 8, { html_url: 'https://github.com/acme/app/pull/1#issuecomment-3' }), comment('stranger', 9), comment('x', 9, { user: null })],
+    issueComments: [comment('ci-bot[bot]', 8, { html_url: 'https://github.com/acme/app/pull/1#issuecomment-3' }), comment('stranger', 9, { html_url: 'https://github.com/acme/app/pull/1#issuecomment-6' }), comment('x', 9, { user: null })],
   });
   const approvedOwn = pr(2, { author: 'octocat', reviews: [approve('monalisa', 'older', 5)], issueComments: [comment('monalisa', 9, { html_url: 'https://github.com/acme/app/pull/2#issuecomment-4' })] });
   const assigned = pr(3, { author: 'hubot', assignees: ['octocat'], issueComments: [comment('monalisa', 9)] });
@@ -33,6 +33,7 @@ test('review activity on a PR the user authored is printed once per item, from c
     'review acme/app#1 head head1: review changes requested by monalisa https://github.com/acme/app/pull/1#pullrequestreview-1',
     'review acme/app#1 head head1: thread comment by monalisa https://github.com/acme/app/pull/1#discussion_r7',
     'review acme/app#1 head head1: comment by ci-bot[bot] https://github.com/acme/app/pull/1#issuecomment-3',
+    'review acme/app#1 head head1: comment by stranger https://github.com/acme/app/pull/1#issuecomment-6',
     `review acme/app#2 head head2: review approved by monalisa ${approvedOwn.reviews[0].html_url}`,
     'review acme/app#2 head head2: comment by monalisa https://github.com/acme/app/pull/2#issuecomment-4',
   ]);
