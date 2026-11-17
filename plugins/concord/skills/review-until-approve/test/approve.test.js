@@ -1690,6 +1690,33 @@ test('a round whose runner fails records the head it attempted and leaves the ro
   assert.equal(w.ledger().rounds.length, 2);
 });
 
+test('start waits after a failed later round until a fresh author reply or newer head (#512)', () => {
+  const w = world();
+  const start = () => JSON.parse(w.approve('start', 'o/r', '5').stdout).action;
+  w.write('findings.json', [finding]);
+  assert.equal(start(), 'round');
+  assert.equal(w.approve('round', 'o/r', '5').status, 0);
+  const head2 = push(w, { 'b.js': 'unrelated\n' }, 'c2');
+  assert.equal(start(), 'round');
+  fs.writeFileSync(path.join(w.dir, 'fail-runner'), '');
+  assert.notEqual(w.approve('round', 'o/r', '5').status, 0);
+  const failed = w.ledger();
+  assert.equal(failed.attempt.head, head2);
+  assert.equal(failed.rounds[0].head, w.c1);
+  w.write('issue-comments.json', [
+    { user: { login: 'dev' }, created_at: failed.attempt.at },
+    { user: { login: 'stranger' }, created_at: '2999-01-01T00:00:00Z' },
+  ]);
+  assert.equal(start(), 'watch');
+  assert.deepEqual(w.ledger().attempt, failed.attempt);
+  assert.deepEqual(w.ledger().rounds, failed.rounds);
+  w.write('issue-comments.json', [{ user: { login: 'dev' }, created_at: '2999-01-01T00:00:00Z' }]);
+  assert.equal(start(), 'round');
+  w.write('issue-comments.json', []);
+  push(w, { 'b.js': 'newer\n' }, 'c3');
+  assert.equal(start(), 'round');
+});
+
 test('a runner result that is not a review still records the head it attempted', () => {
   const w = world();
   w.write('findings.json', [finding]);
