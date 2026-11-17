@@ -19,9 +19,21 @@ const CONVENTION =
   'Tag durable decisions and open items inline so a hook can persist them across sessions: ' +
   '`DECISION:` / `OPEN-LOOP:` / `NEXT:` / `RESOLVED:`.';
 
+// The background watchers' pending lines, shown to the user (see the pr-to-merge skill's watcher.js).
+function withNotices(context) {
+  try {
+    return require('../skills/pr-to-merge/scripts/watcher').sessionStartOutput(context, 'claude');
+  } catch {
+    return context;
+  }
+}
+
 function main() {
   const { sessionId, transcriptPath } = readStdinEvent();
-  if (!transcriptPath) return;
+  if (!transcriptPath) {
+    process.stdout.write(withNotices(''));
+    return;
+  }
   const sid = path.basename(String(sessionId || ''));
   const stateDir = path.join(path.dirname(transcriptPath), 'state');
 
@@ -38,7 +50,7 @@ function main() {
     parts.push(header + '\n' + renderCharter(northStar, merged));
   }
   parts.push(CONVENTION);
-  process.stdout.write(parts.join('\n\n'));
+  process.stdout.write(withNotices(parts.join('\n\n')));
 }
 
 try {

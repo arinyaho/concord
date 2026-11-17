@@ -15,9 +15,8 @@ test('an approval by any account with write access counts, requested or not, and
   }
 });
 
-test('an approval by the author, by a read-only member, or by an account whose access cannot be read does not count', () => {
+test('an approval by a read-only member, an app, an unknown login, or an account whose access cannot be read does not count', () => {
   for (const [reviews, permissions] of [
-    [[approve('hubot', 'head1')], { hubot: 'write' }],
     [[approve('nobody-here', 'head1')], {}],
     [[approve('review-bot[bot]', 'head1')], {}],
     [[approve('monalisa', 'head1')], { monalisa: 'read' }],
@@ -36,21 +35,37 @@ test('an approval by --self never counts, alone or on an ordinary pull request',
   assert.deepEqual(r.lines, []);
   assert.deepEqual(r.writes, []);
   const both = world(repo(pr(1, { reviews: [approve('octocat', 'head1'), approve('monalisa', 'older')] }))).run(['acme/app']);
-  assert.deepEqual(both.lines, ['triage acme/app#1 head head1: approved on an older head only: by monalisa at older, commits after it not read'], 'only the other approval is judged');
+  assert.deepEqual(both.lines, ['stale approval acme/app#1 head head1: by monalisa at older, asked again, commits after it not read'], 'only the other approval is judged');
 });
 
-test('a lost approval, for example to a dismissal, is simply not approved and prints nothing', () => {
+test('a dismissed approval does not count, and its approver is asked again', () => {
   const r = world(repo(pr(1, { reviews: [review('monalisa', 'DISMISSED', 'older', 10)] }))).run(['acme/app']);
-  assert.deepEqual(r.lines, []);
-  assert.deepEqual(r.writes, []);
+  assert.deepEqual(r.lines, ['stale approval acme/app#1 head head1: by monalisa at older, asked again, commits after it not read']);
+  assert.deepEqual(r.writes, [['api', '-X', 'POST', 'repos/acme/app/pulls/1/requested_reviewers', '-f', 'reviewers[]=monalisa']]);
 });
 
 test('an approval whose body begins with a concord-approve line never counts, whoever posted it', () => {
   const agent = approve('monalisa', 'head1', 10, { body: '<!-- concord-approve: head1 round:2 base:abc -->\nApproved.' });
   assert.deepEqual(world(repo(pr(1, { reviews: [agent] }))).run(['acme/app']).lines, []);
   assert.deepEqual(world(repo(pr(1, { reviews: [agent, approve('octo-dev', 'head1', 11)] }))).run(['acme/app']).lines, merged(1));
+  assert.deepEqual(world(repo(pr(1, { reviews: [approve('monalisa', 'head1', 10, { body: '<!-- concord-approve:head1 -->' })] }))).run(['acme/app']).lines, [], 'without the space');
+  assert.deepEqual(world(repo(pr(1, { reviews: [approve('monalisa', 'head1', 10, { body: '\n<!-- concord-approve: head1 -->\nApproved.' })] }))).run(['acme/app']).lines, [], 'after a blank line');
   const quoted = approve('monalisa', 'head1', 10, { body: 'Approved; see <!-- concord-approve: x round:1 base:y -->' });
   assert.deepEqual(world(repo(pr(1, { reviews: [quoted] }))).run(['acme/app']).lines, merged(1), 'only a first line counts as the marker');
+});
+
+test('an approval whose body ends with a review-until-approve state line never counts, whoever posted it, with or without a trailing newline', () => {
+  const state = '<!-- review-until-approve:state eyJyb3VuZCI6MX0 -->';
+  for (const body of [`No findings.\n\n${state}`, `No findings.\n${state}\n`, `No findings.\r\n${state}\r\n`, `No findings.\n${state}\n  \n`, state]) {
+    for (const login of ['monalisa', 'octo-dev']) {
+      const r = world(repo(pr(1, { reviews: [approve(login, 'head1', 10, { body })] }))).run(['acme/app']);
+      assert.ok(!r.lines.some((l) => l.startsWith('merged')), JSON.stringify(body));
+      assert.deepEqual(r.writes.filter((c) => c[0] === 'pr'), [], JSON.stringify(body));
+    }
+  }
+  assert.deepEqual(world(repo(pr(1, { reviews: [approve('monalisa', 'head1', 10, { body: `No findings.\n${state}` }), approve('octo-dev', 'head1', 11)] }))).run(['acme/app']).lines, merged(1), 'a person\'s approval still counts');
+  const inside = approve('monalisa', 'head1', 10, { body: `See ${state} above.\nApproved.` });
+  assert.deepEqual(world(repo(pr(1, { reviews: [inside] }))).run(['acme/app']).lines, merged(1), 'only a last line counts as the marker');
 });
 
 test('the write access of an approver is read once per scan', () => {
@@ -92,7 +107,7 @@ test('reviews on a later page are read', () => {
 
 test('a review with no commit covers nothing and does not stop the scan', () => {
   const r = world(repo(pr(1, { reviews: [approve('monalisa', null)] }))).run(['acme/app']);
-  assert.deepEqual(r.lines, ['triage acme/app#1 head head1: approved on an older head only: by monalisa at no commit, commits after it not read']);
+  assert.deepEqual(r.lines, ['stale approval acme/app#1 head head1: by monalisa at no commit, asked again, commits after it not read']);
   assert.equal(r.stderr, '');
 });
 
@@ -100,10 +115,10 @@ test('a review with no commit covers nothing and does not stop the scan', () => 
 function run(build, { commits = {} } = {}) {
   const g = gitPr(5, build);
   const w = world({ 'acme/app': { prs: [pr(5, { headRefName: 'pr', headRefOid: g.head, reviews: [approve('monalisa', g.approved)] })], commits: typeof commits === 'function' ? commits(g) : commits } });
-  return { g, w, r: w.run(['--checkout', `acme/app=${g.checkout}`, 'acme/app']) };
+  return { g, w, r: w.run(['--checkout', g.checkout, 'acme/app']) };
 }
 // The stale line for the approval at g.approved, with `n` commits after it that do not keep coverage.
-const stale = (g, n = 1) => [`triage acme/app#5 head ${g.head.slice(0, 8)}: approved on an older head only: by monalisa at ${g.approved.slice(0, 8)}, ${n} commit${n === 1 ? '' : 's'} after it not covered`];
+const stale = (g, n = 1) => [`stale approval acme/app#5 head ${g.head}: by monalisa at ${g.approved.slice(0, 8)}, asked again, ${n} commit${n === 1 ? '' : 's'} after it not covered`];
 
 test('an approval on an older head followed only by clean merges of the base covers the head, with no API call', () => {
   const { g, r } = run(({ edit, sh }) => {
@@ -140,7 +155,7 @@ test('a conflict merge keeps coverage only when GitHub made it for --self, never
   for (const [name, commit, covers] of cases) {
     const { g, r } = run(conflictMerge, { commits: (h) => ({ [h.head]: commit }) });
     assert.deepEqual(r.lines, covers ? merged(5, g.head) : stale(g), name);
-    if (!covers) assert.deepEqual(r.writes, [], name);
+    if (!covers) assert.deepEqual(r.writes.filter((c) => c[0] === 'pr'), [], name);
   }
 });
 
@@ -166,8 +181,10 @@ test('any other commit after the approval leaves only an older head approved, re
     return { approved };
   });
   assert.deepEqual(r.lines, stale(g));
-  assert.deepEqual(r.writes, []);
-  assert.deepEqual(w.run(['--checkout', `acme/app=${g.checkout}`, 'acme/app']).lines, []);
+  assert.deepEqual(r.writes, [['api', '-X', 'POST', 'repos/acme/app/pulls/5/requested_reviewers', '-f', 'reviewers[]=monalisa']]);
+  const again = w.run(['--checkout', g.checkout, 'acme/app']);
+  assert.deepEqual(again.lines, [], 'once per head');
+  assert.deepEqual(again.writes, []);
 });
 
 test('a clean merge counts only from the pull request\'s own base: the default branch merged into a release-branch PR does not cover', () => {
@@ -182,14 +199,14 @@ test('a clean merge counts only from the pull request\'s own base: the default b
   for (const [from, covers] of [['main', false], ['release', true]]) {
     const g = gitPr(5, build(from));
     const w = world({ 'acme/app': { prs: [pr(5, { headRefName: 'pr', baseRefName: 'release', headRefOid: g.head, reviews: [approve('monalisa', g.approved)] })] } });
-    const r = w.run(['--checkout', `acme/app=${g.checkout}`, 'acme/app']);
+    const r = w.run(['--checkout', g.checkout, 'acme/app']);
     assert.deepEqual(r.lines, covers ? [`merged acme/app#5 into release (squash) head ${g.head.slice(0, 8)}; not passed: 0; unresolved threads: 0`] : stale(g), from);
   }
 });
 
 test('without --checkout only an approval on the current head covers it, and the stale line names the approval and says the later commits were not read', () => {
   const r = world(repo(pr(1, { reviews: [approve('octo-dev', 'oldest', 5), approve('monalisa', 'older', 10)] }))).run(['acme/app']);
-  assert.deepEqual(r.lines, ['triage acme/app#1 head head1: approved on an older head only: by monalisa at older, commits after it not read']);
+  assert.deepEqual(r.lines, ['stale approval acme/app#1 head head1: by monalisa at older, asked again, commits after it not read']);
 });
 
 test('the stale line names the newest counting approval, its commit, and how many commits after it do not keep coverage', () => {
@@ -203,10 +220,9 @@ test('the stale line names the newest counting approval, its commit, and how man
     return { approved, first };
   });
   const w = world({ 'acme/app': { prs: [pr(5, { headRefName: 'pr', headRefOid: g.head, reviews: [approve('octo-dev', g.first, 5), approve('monalisa', g.approved, 10)] })] } });
-  const r = w.run(['--checkout', `acme/app=${g.checkout}`, 'acme/app']);
+  const r = w.run(['--checkout', g.checkout, 'acme/app']);
   assert.deepEqual(r.lines, stale(g, 2));
-  assert.match(r.lines[0], /monalisa at [0-9a-f]{8}, 2 commits after it/);
-  assert.deepEqual(r.writes, []);
+  assert.match(r.lines[0], /monalisa at [0-9a-f]{8}, asked again, 2 commits after it/);
 });
 
 test('a clean merge of the base after the approval is not counted among the commits after it', () => {
@@ -229,14 +245,7 @@ test('an approval whose commit is not on the head\'s first-parent line is named 
     edit('ONE\ntwo\nthree\nrewritten\n', 'A rewritten');
     return { approved };
   });
-  assert.deepEqual(r.lines, [`triage acme/app#5 head ${g.head.slice(0, 8)}: approved on an older head only: by monalisa at ${g.approved.slice(0, 8)}, not on the head's first-parent line`]);
-});
-
-test('a --checkout path that is not a clone is a usage error', () => {
-  const w = world(repo());
-  const r = w.run(['--checkout', `acme/app=${w.dir}`, 'acme/app']);
-  assert.equal(r.code, 2);
-  assert.match(r.stderr, /merge-tree --write-tree/);
+  assert.deepEqual(r.lines, [`stale approval acme/app#5 head ${g.head}: by monalisa at ${g.approved.slice(0, 8)}, asked again, not on the head's first-parent line`]);
 });
 
 test('end to end: a branch behind its base is updated, the approval covers the new head, and a later scan merges', () => {
@@ -248,7 +257,7 @@ test('end to end: a branch behind its base is updated, the approval covers the n
     return { approved };
   });
   const w = world({ 'acme/app': { prs: [pr(5, { headRefName: 'pr', headRefOid: g.head, mergeStateStatus: 'BEHIND', reviews: [approve('monalisa', g.approved)] })] } });
-  const args = ['--checkout', `acme/app=${g.checkout}`, 'acme/app'];
+  const args = ['--checkout', g.checkout, 'acme/app'];
   const first = w.run(args);
   assert.deepEqual(first.lines, [`synced acme/app#5 head ${g.head.slice(0, 8)}`]);
   assert.deepEqual(first.writes, [['api', '-X', 'PUT', 'repos/acme/app/pulls/5/update-branch', '-f', `expected_head_sha=${g.head}`]]);

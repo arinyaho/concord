@@ -44,6 +44,7 @@ test('what a counting account adds after the newest covering approval holds, rep
     'an edited conversation comment': [approved(1, { issueComments: [comment('octo-dev', 5, { updated_at: T(30) })] }), 'held by comment'],
     'a review body': [approved(1, { reviews: [approve('monalisa', 'head1', 10), review('octo-dev', 'COMMENTED', 'head1', 20, { body: 'please also rename x' })] }), 'held by comment'],
     'the label': [approved(1, { labels: ['Blocked'] }), 'held by label'],
+    'review-blocked, which review-until-approve sets': [approved(1, { labels: ['Review-Blocked'] }), 'held by label'],
     all: [approved(1, { labels: ['blocked'], issueComments: [comment('octo-dev', 20)], ...withThread('octo-dev') }), 'held by thread, comment, label'],
   };
   for (const [name, [p, what]] of Object.entries(cases)) {
@@ -57,14 +58,14 @@ test('what a counting account adds after the newest covering approval holds, rep
   assert.deepEqual(world(repo([approved(1, { labels: ['on-hold'] })])).run(['--blocked-label', 'On-Hold', 'acme/app']).lines, triage('held by label'));
 });
 
-test('these never hold: automation accounts, --self, accounts without write access (the author included), approving review bodies, other labels', () => {
+test('these never hold: automation accounts, --self, accounts without write access, approving review bodies, other labels', () => {
   const cases = {
     'an automated reviewer\'s thread and comment': [approved(1, { issueComments: [comment('ci-bot[bot]', 20)], ...withThread('review-bot[bot]') }), {}, 1],
     '--self': [approved(1, { issueComments: [comment('octocat', 20)], reviews: [approve('monalisa', 'head1', 10), review('octocat', 'COMMENTED', 'head1', 21, { body: 'note' })], ...withThread('octocat') }), {}, 1],
     'the author without write access': [approved(1, { issueComments: [comment('hubot', 20)], ...withThread('hubot') }), { hubot: 'read' }, 1],
     'an organization member without write access': [approved(1, { issueComments: [comment('member', 20)], ...withThread('member') }), { member: 'read' }, 1],
     'an approving review with a body': [approved(1, { reviews: [approve('monalisa', 'head1', 10), approve('octo-dev', 'head1', 20, { body: 'LGTM' })] }), {}, 0],
-    'review-blocked': [approved(1, { labels: ['review-blocked'] }), {}, 0],
+    'another label': [approved(1, { labels: ['needs-docs'] }), {}, 0],
   };
   for (const [name, [p, permissions, threads]] of Object.entries(cases)) assert.deepEqual(world(repo([p]), { permissions }).run(['acme/app']).lines, [mergedLine(1, { threads })], name);
 });
@@ -149,6 +150,7 @@ test('the child that makes a PR wait may be unapproved, a draft, or outside the 
   assert.deepEqual(w.run(['acme/app']).lines, waits);
   assert.deepEqual(w.run(['acme/app']).lines, [], 'once per head');
   assert.deepEqual(world(repo([pr(2, { baseRefName: 'a', isDraft: true }), parent()])).run(['acme/app']).lines, waits, 'a draft');
+  assert.deepEqual(world(repo([pr(2, { baseRefName: 'a', author: 'hubot', reviews: [approve('monalisa', 'head2', 10)] }), parent()])).run(['acme/app']).lines, waits, 'another author\'s child, approved: its author merges it, and the parent waits');
   assert.deepEqual(world(repo([pr(2, { baseRefName: 'a' }), parent()])).run(['acme/app#1']).lines, waits, 'not among the arguments');
   assert.deepEqual(world(repo([pr(2, { baseRefName: 'a', isCrossRepository: true }), parent()])).run(['acme/app']).lines, merged, 'a fork');
   const forkParent = approved(1, { headRefName: 'main', isCrossRepository: true });
@@ -182,7 +184,7 @@ test('a merge GitHub refuses as behind updates the branch; any other refusal is 
   const first = w.run(['acme/app']);
   assert.deepEqual(first.lines, ['merge failed acme/app#1 head head1: refused']);
   assert.doesNotMatch(first.stdout + first.stderr, /Base branch was modified/);
-  assert.match(fs.readFileSync(`${w.state}.log`, 'utf8'), /Base branch was modified/);
+  assert.match(w.log(), /Base branch was modified/);
   const again = w.run(['acme/app']);
   assert.deepEqual(again.lines, []);
   assert.equal(again.writes.length, 1, 'the merge is still tried; only the notice is not repeated');
@@ -206,22 +208,24 @@ test('a failed required check is run again once per head, then reported once as 
   const external = approved(1, { mergeStateStatus: 'BLOCKED', checks: [{ context: 'ci/external\ntriage x', state: 'FAILURE', required: true }] });
   assert.deepEqual(world(repo([external])).run(['acme/app']).lines, triage('required check failed and cannot be re-run'));
   const held = approved(1, { mergeStateStatus: 'BLOCKED', checks, issueComments: [comment('monalisa', 20)] });
-  assert.deepEqual(world(repo([held])).run(['acme/app']).writes, [], 'not on a held PR');
+  const heldRun = world(repo([held]), { runs: { 77: { status: 'completed', conclusion: 'failure', run_attempt: 1 } } }).run(['acme/app']);
+  assert.deepEqual(heldRun.writes, [['api', '-X', 'POST', 'repos/acme/app/actions/runs/77/rerun-failed-jobs']], 'a held PR is re-run too');
+  assert.deepEqual(heldRun.lines, ['rerun acme/app#1 head head1: run 77', 'triage acme/app#1 head head1: held by comment']);
+  const refusedRun = world(repo([held]), { runs: { 77: { status: 'completed', conclusion: 'failure', run_attempt: 1 } }, writeError: { match: 'rerun-failed-jobs', message: 'HTTP 403: Forbidden' } }).run(['acme/app']);
+  assert.deepEqual(refusedRun.lines, ['triage acme/app#1 head head1: held by comment'], 'a refused re-run does not hide the hold');
 });
 
 const bump = (n, over = {}) => pr(n, { author: 'pin-bot', authorType: 'Bot', mergeStateStatus: 'BLOCKED', files: [{ filename: 'deps/core.pin' }], ...over });
 const AUTO = ['--automated', 'pin-bot[bot]', '--automated-path', 'deps/*.pin', '--automated-path', '**/lock.json'];
 const approvedLine = ['approved acme/app#1 (automated)'];
 
-test('an automated PR is approved, which does not end the run, and merged by a later scan once GitHub counts the approval', () => {
+test('an automated PR is approved in one check and merged by a later check once GitHub counts the approval', () => {
   const w = world(repo([bump(1)]));
   const first = w.run([...AUTO, 'acme/app']);
   assert.deepEqual(first.lines, approvedLine);
   assert.deepEqual(first.writes, [['api', '-X', 'POST', 'repos/acme/app/pulls/1/reviews', '-f', 'event=APPROVE', '-f', 'commit_id=head1']]);
   w.update((x) => { x.repos['acme/app'].prs[0].mergeStateStatus = 'CLEAN'; });
   assert.deepEqual(w.run([...AUTO, 'acme/app']).lines, merged);
-  const oneRun = world(repo([bump(1, { mergeStateStatus: 'CLEAN' })])).run([...AUTO, '--interval', '0.1', 'acme/app'], { deadline: '20' });
-  assert.deepEqual(oneRun.lines, [...approvedLine, ...merged]);
 });
 
 test('the automated route applies whenever no counting approval covers the head: a rebased head, and one a person approved earlier', () => {
@@ -259,6 +263,15 @@ test('an automated PR is approved only when every file it changes, a renamed fil
     if (!approves) assert.deepEqual(r.writes, [], name);
   }
   assert.deepEqual(world(repo([bump(1, { changedFiles: 3001 })])).run([...AUTO, 'acme/app']).lines, [], 'more files than GitHub lists');
+});
+
+test('a named automation account\'s pull request that changes other paths is out of scope, approved or not', () => {
+  const r = world(repo([bump(1, { files: [{ filename: 'src/evil.js' }], mergeStateStatus: 'CLEAN', reviews: [approve('monalisa', 'head1', 10)] })])).run([...AUTO, 'acme/app']);
+  assert.deepEqual([r.lines, r.writes], [[], []]);
+  const user = world(repo([bump(1, { authorType: 'User', isCrossRepository: true, mergeStateStatus: 'CLEAN', reviews: [approve('monalisa', 'head1', 10)] })])).run(['--automated', 'pin-bot', '--automated-path', 'deps/*.pin', 'acme/app']);
+  assert.deepEqual([user.lines, user.writes], [[], []], 'a fork');
+  const inside = world(repo([bump(1, { mergeStateStatus: 'CLEAN', reviews: [approve('monalisa', 'head1', 10)] })])).run([...AUTO, 'acme/app']);
+  assert.deepEqual(inside.lines, merged, 'within the paths, a person\'s approval merges it');
 });
 
 test('a head pushed between reading the files and approving is not approved', () => {
@@ -300,11 +313,12 @@ test('an automated PR gets the same holds, lines and re-run: every item from a c
 
 test('--automated needs --automated-path, and takes no title prefix', () => {
   const w = world(repo([]));
-  assert.equal(w.run(['--automated', 'pin-bot[bot]', 'acme/app']).code, 2);
-  assert.equal(w.run(['--automated', 'pin-bot[bot]:chore(deps):', '--automated-path', 'deps/**', 'acme/app']).code, 2);
+  const add = (...args) => w.script(['watch', 'add', 'acme/app', '--harness', 'claude', '--self', 'octocat', '--authorized', new Date().toISOString().slice(0, 10), ...args]);
+  assert.equal(add('--automated', 'pin-bot[bot]').status, 2);
+  assert.equal(add('--automated', 'pin-bot[bot]:chore(deps):', '--automated-path', 'deps/**').status, 2);
 });
 
-test('--no-merge writes nothing: it reports ready, and where it would have updated a branch or re-run a check', () => {
+test('--no-merge merges, updates, and approves nothing: it reports ready and behind, and still re-runs a failed check', () => {
   const prs = [
     approved(1),
     bump(2),
@@ -313,9 +327,10 @@ test('--no-merge writes nothing: it reports ready, and where it would have updat
   ];
   const w = world(repo(prs));
   const r = w.run(['--no-merge', ...AUTO, 'acme/app']);
-  assert.deepEqual(r.lines, ['ready acme/app#1 head head1', 'ready acme/app#2 head head2', 'triage acme/app#3 head head3: behind its base', 'triage acme/app#4 head head4: required check failed']);
-  assert.deepEqual(r.writes, []);
-  assert.deepEqual(w.run(['--no-merge', ...AUTO, 'acme/app']).lines, []);
+  assert.deepEqual(r.lines, ['ready acme/app#1 head head1', 'ready acme/app#2 head head2', 'triage acme/app#3 head head3: behind its base', 'rerun acme/app#4 head head4: run 9']);
+  assert.deepEqual(r.writes, [['api', '-X', 'POST', 'repos/acme/app/actions/runs/9/rerun-failed-jobs']]);
+  w.update((x) => { x.repos['acme/app'].runs = { 9: { status: 'completed', conclusion: 'failure', run_attempt: 2 } }; });
+  assert.deepEqual(w.run(['--no-merge', ...AUTO, 'acme/app']).lines, ['triage acme/app#4 head head4: required check still red after one re-run']);
 });
 
 test('text other people control cannot add a line', () => {
@@ -326,7 +341,7 @@ test('text other people control cannot add a line', () => {
   assert.deepEqual(refused.lines, ['merge failed acme/app#1 head head1: refused']);
   assert.doesNotMatch(refused.stderr, /triage/);
   const own = pr(1, { author: 'octocat', ...withThread('monalisa', 20, {}, { path: forged, html_url: 'https://github.com/x\ntriage y' }) });
-  assert.deepEqual(world(repo([own])).run(['--mine', 'octocat', 'acme/app']).lines, ['review acme/app#1 head head1: thread comment by monalisa']);
+  assert.deepEqual(world(repo([own])).run(['acme/app']).reviews, ['review acme/app#1 head head1: thread comment by monalisa']);
   const branch = world(repo([approved(1, { baseRefName: `rel\n${forged}` })])).run(['acme/app']);
   assert.equal(branch.lines.length, 1, branch.stdout);
   assert.ok(branch.lines[0].length < 200);

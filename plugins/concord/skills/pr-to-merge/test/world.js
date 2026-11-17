@@ -1,8 +1,9 @@
 'use strict';
 // A fake `gh` on PATH that serves pull requests from world.json and records each call in calls.jsonl. Lists come in
 // pages of two: with --paginate every page is served (wrapped in an array with --slurp), without it only the page the
-// `endCursor` variable names, so a call that forgets to page sees only the first page. Merges and approvals change the
-// world as GitHub would. Nothing touches the network.
+// `endCursor` variable names, so a call that forgets to page sees only the first page. Merges, approvals, and review
+// requests change the world as GitHub would. Fake `osascript` and `notify-send` record system notifications in
+// notifications.jsonl. Nothing touches the network.
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync, execFileSync } = require('node:child_process');
@@ -44,9 +45,9 @@ const gqlPr = (p) => ({ number: p.number, state: p.state, isDraft: p.isDraft, ti
   author: { login: p.author, __typename: p.authorType }, assignees: { nodes: p.assignees.map((login) => ({ login })) },
   labels: { nodes: p.labels.map((name) => ({ name })) }, headRefName: p.headRefName, headRefOid: p.headRefOid, isCrossRepository: p.isCrossRepository,
   baseRefName: p.baseRefName, mergeable: p.mergeable, mergeStateStatus: p.mergeStateStatus, isInMergeQueue: Boolean(p.queued),
-  changedFiles: p.changedFiles ?? (p.files || []).length,
-  approvals: { totalCount: p.reviews.filter((r) => r.state === 'APPROVED').length } });
+  changedFiles: p.changedFiles ?? (p.files || []).length, reviewDecision: p.reviewDecision, mergeCommit: p.mergeCommit ? { oid: p.mergeCommit } : null });
 if (a[0] === 'api' && url === 'user') out({ login: w.self || 'octocat' });
+else if (a[0] === 'api' && url === 'rate_limit') out({ resources: { core: { remaining: 5000, reset: 1767225600 }, graphql: { remaining: 5000, reset: 1767225600 }, ...w.rateLimit } });
 else if (a[0] === 'api' && url === 'graphql') {
   const q = field('query'), name = field('owner') + '/' + field('name'), repo = repoAt(name);
   if (!repo) fail('Could not resolve to a Repository');
@@ -66,6 +67,7 @@ else if (a[0] === 'api' && url === 'graphql') {
   if (w.queue) p.queued = true;
   else {
     p.state = 'MERGED';
+    p.mergeCommit = 'mc' + p.number;
     const parent = a.includes('--merge') && repo.prs.find((x) => x.headRefName === p.baseRefName && x.state === 'OPEN');
     if (parent) {
       const merge = 'merge' + p.number;
@@ -78,6 +80,14 @@ else if (a[0] === 'api' && url === 'graphql') {
   if (w.writeError && new RegExp(w.writeError.match).test(url)) fail(w.writeError.message);
   const dismiss = /^repos\\/([^/]+\\/[^/]+)\\/pulls\\/(\\d+)\\/reviews\\/(\\d+)\\/dismissals$/.exec(url);
   if (dismiss) { prOf(repoAt(dismiss[1]), dismiss[2]).reviews.find((r) => String(r.id) === dismiss[3]).state = 'DISMISSED'; save(); }
+  const requested = /^repos\\/([^/]+\\/[^/]+)\\/pulls\\/(\\d+)\\/requested_reviewers$/.exec(url);
+  if (requested) {
+    const p = prOf(repoAt(requested[1]), requested[2]);
+    const all = (key) => a.filter((x, i) => a[i - 1] === '-f' && x.startsWith(key + '[]=')).map((x) => x.slice(key.length + 3));
+    p.requested = [...p.requested, ...all('reviewers'), ...all('team_reviewers').map((t) => 'team:' + t)];
+    p.timeline = [...p.timeline, { event: 'review_requested', created_at: new Date().toISOString() }];
+    save();
+  }
   const approve = /^repos\\/([^/]+\\/[^/]+)\\/pulls\\/(\\d+)\\/reviews$/.exec(url);
   if (approve) {
     prOf(repoAt(approve[1]), approve[2]).reviews.push({ id: 5000 + a.length, user: { login: w.self || 'octocat', type: 'User' }, state: 'APPROVED', commit_id: field('commit_id'), submitted_at: new Date().toISOString(), body: '', author_association: 'MEMBER' });
@@ -90,6 +100,12 @@ else if (a[0] === 'api' && url === 'graphql') {
   let m;
   if (!name && (m = /^repos\\/([^/]+\\/[^/]+)$/.exec(url))) out({ allow_squash_merge: true, allow_merge_commit: true, allow_rebase_merge: true, ...(repoAt(m[1]).settings || {}) });
   else if ((m = /^pulls\\/(\\d+)\\/reviews/.exec(rest))) restPages(prOf(repo, m[1]).reviews);
+  else if ((m = /^pulls\\/(\\d+)\\/requested_reviewers$/.exec(rest))) {
+    const r = prOf(repo, m[1]).requested;
+    out({ users: r.filter((x) => !x.startsWith('team:')).map((login) => ({ login })), teams: r.filter((x) => x.startsWith('team:')).map((x) => ({ slug: x.slice(5) })) });
+  }
+  else if ((m = /^issues\\/(\\d+)\\/timeline/.exec(rest))) restPages(prOf(repo, m[1]).timeline);
+  else if ((m = /^actions\\/runs\\?head_sha=(\\w+)/.exec(rest))) out(paginate && slurp ? [{ workflow_runs: (repo.runsBySha || {})[m[1]] || [] }] : { workflow_runs: (repo.runsBySha || {})[m[1]] || [] });
   else if ((m = /^pulls\\/(\\d+)\\/comments/.exec(rest))) restPages(prOf(repo, m[1]).comments);
   else if ((m = /^issues\\/(\\d+)\\/comments/.exec(rest))) restPages(prOf(repo, m[1]).issueComments);
   else if ((m = /^pulls\\/(\\d+)\\/files/.exec(rest))) {
@@ -122,9 +138,12 @@ let ids = 1000;
 const nextId = () => ++ids;
 const user = (login) => ({ login, type: login.endsWith('[bot]') ? 'Bot' : 'User' });
 
+// By default the user's own pull request (author octocat, the --self of every run) on a base that requires a review,
+// with a review requested once long ago and none outstanding.
 function pr(number, over = {}) {
   return {
-    number, state: 'OPEN', isDraft: false, title: 'Change', url: `https://github.com/acme/app/pull/${number}`, createdAt: T(0), author: 'hubot', authorType: 'User',
+    number, state: 'OPEN', isDraft: false, title: 'Change', url: `https://github.com/acme/app/pull/${number}`, createdAt: T(0), author: 'octocat', authorType: 'User',
+    reviewDecision: 'REVIEW_REQUIRED', requested: [], timeline: [{ event: 'review_requested', created_at: T(1) }],
     assignees: [], labels: [], headRefName: `feat-${number}`, headRefOid: `head${number}`, isCrossRepository: false, baseRefName: 'main',
     mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', reviews: [], comments: [], threads: [], issueComments: [],
     checks: [{ name: 'build', required: true, runId: 900 + number }], ...over,
@@ -136,34 +155,57 @@ const comment = (login, minute, over = {}) => ({ id: nextId(), user: user(login)
 // A review-thread comment; a reply passes `in_reply_to_id`.
 const threadComment = (login, over = {}) => ({ id: nextId(), user: user(login), path: 'src/a.js', line: 3, author_association: 'MEMBER', html_url: `https://github.com/acme/app/pull/1#discussion_r${ids}`, created_at: T(20), updated_at: T(20), ...over });
 
+const PR_TO_MERGE = require(SCRIPT);
+const TODAY = new Date().toISOString().slice(0, 10);
+// A target is OWNER/REPO or OWNER/REPO#N that is not the value of an option.
+const isTarget = (a, i, args) => /^[\w.-]+\/[\w.-]+(#\d+)?$/.test(a) && !(/^--/.test(args[i - 1] || '') && !['--confirm', '--no-merge'].includes(args[i - 1]));
+const fakeNotifier = (dir) => `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(path.join(dir, 'notifications.jsonl'))}, JSON.stringify(process.argv.slice(2)) + '\\n');\n`;
+
 function world(repos, extra = {}) {
   const dir = tempDir('ptm-world-');
   fs.mkdirSync(path.join(dir, 'bin'));
   fs.writeFileSync(path.join(dir, 'bin', 'gh'), FAKE_GH(dir), { mode: 0o755 });
+  for (const n of ['osascript', 'notify-send']) fs.writeFileSync(path.join(dir, 'bin', n), fakeNotifier(dir), { mode: 0o755 });
   const file = path.join(dir, 'world.json');
   // The accounts with write access in every fixture; a test names any other account's permission itself.
   const permissions = { octocat: 'admin', monalisa: 'write', 'octo-dev': 'write', ...extra.permissions };
   fs.writeFileSync(file, JSON.stringify({ repos, ...extra, permissions }));
   fs.writeFileSync(path.join(dir, 'calls.jsonl'), '');
   const calls = () => fs.readFileSync(path.join(dir, 'calls.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
-  const stateDir = path.join(dir, 'state');
-  fs.mkdirSync(stateDir);
-  const state = path.join(stateDir, 'state.json');
+  const config = path.join(dir, 'config');
+  const base = path.join(config, 'concord');
+  const skillDir = path.join(base, 'pr-to-merge');
+  const env = { ...process.env, HOME: path.join(dir, 'home'), CLAUDE_CONFIG_DIR: config, PATH: `${path.join(dir, 'bin')}${path.delimiter}${process.env.PATH}` };
+  delete env.CODEX_HOME;
+  const read = (name) => (fs.existsSync(path.join(dir, name)) ? fs.readFileSync(path.join(dir, name), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+  // Runs the script with `args` and this world's fakes.
+  const script = (args, { timeout = 30000, input } = {}) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', timeout, env, input });
   return {
-    dir, state, stateDir,
+    dir, env, config, base, skillDir, script, calls,
+    notifications: () => read('notifications.jsonl'),
+    log: () => fs.readFileSync(path.join(skillDir, 'log'), 'utf8'),
     get: () => JSON.parse(fs.readFileSync(file, 'utf8')),
     update(fn) { const w = this.get(); fn(w); fs.writeFileSync(file, JSON.stringify(w)); },
-    run(args, { self = 'octocat', deadline = '0', timeout = 30000, noState = false } = {}) {
+    // Writes the watch entries that `watch add` would write for `args` (one per repository named, --self octocat,
+    // authorized today) without starting a watcher, then runs one check. `lines` holds the lines the check recorded
+    // other than `review` lines, which are in `reviews`.
+    run(args, { self = 'octocat', authorized = TODAY } = {}) {
+      const options = args.filter((a, i) => !isTarget(a, i, args));
+      const targets = args.filter(isTarget);
+      const repos = [...new Set(targets.map((a) => a.split('#')[0]))];
+      const list = { entries: {}, ...(fs.existsSync(path.join(skillDir, 'watch.json')) ? JSON.parse(fs.readFileSync(path.join(skillDir, 'watch.json'), 'utf8')) : {}) };
+      for (const repo of repos) {
+        const entry = PR_TO_MERGE.entryFromArgs([...targets.filter((a) => a.split('#')[0] === repo), ...options, '--harness', 'claude', '--self', self, '--authorized', authorized]);
+        PR_TO_MERGE.addEntry(list, entry);
+      }
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(path.join(skillDir, 'watch.json'), JSON.stringify(list));
       const before = calls().length;
-      const r = spawnSync(process.execPath, [SCRIPT, '--self', self, ...(noState ? [] : ['--state', state]), '--deadline', deadline, ...args], {
-        encoding: 'utf8', timeout, env: { ...process.env, PATH: `${path.join(dir, 'bin')}${path.delimiter}${process.env.PATH}` },
-      });
+      const r = script(['check', '--harness', 'claude']);
       const made = calls().slice(before);
-      // The last line names the command to run again; `lines` holds the event lines before it.
-      const lines = r.stdout.split('\n').filter(Boolean);
-      const exited = /^exited /.test(lines[lines.length - 1] || '') ? lines.pop() : undefined;
+      const all = r.stdout.split('\n').filter(Boolean);
       return {
-        lines, exited, stdout: r.stdout, stderr: r.stderr, code: r.status, calls: made,
+        lines: all.filter((l) => !l.startsWith('review ')), reviews: all.filter((l) => l.startsWith('review ')), stdout: r.stdout, stderr: r.stderr, code: r.status, calls: made,
         writes: made.filter((c) => c.includes('-X') || (c[0] === 'pr' && c[1] === 'merge')),
       };
     },

@@ -9,7 +9,7 @@ concord is a plugin for Claude Code and Codex that reviews and fixes your branch
 
 - `review-and-fix` has one independent reviewer, in a fresh context, review a design document, a ticket, or your change against its requirements and the repositories it depends on. You fix what it finds through the session, and a new reviewer rechecks the fixes.
 - `ticket-to-pr` and `initiative-to-prs` take a ticket, or a whole initiative, through design, implementation, review, and a pull request. Progress and decisions are written on the ticket and the pull request, so a new session can resume from them.
-- `pr-to-merge` merges approved pull requests as soon as GitHub allows it, when you have authorized merging.
+- `pr-to-merge` carries your own pull requests to their merge from a background watcher that keeps running after the session ends, and merges each one as soon as it qualifies when you have authorized merging.
 - `review-until-approve` reviews someone else's pull request round by round, waits for the author to push or reply, and approves the reviewed head once a round is clean. It never requests changes, merges, or pushes.
 - `explain-pr` walks you through someone else's pull request before you approve it, with every claim pointing at a file and line. It reads the pull request in a read-only mode and approves nothing.
 
@@ -41,7 +41,7 @@ Each workflow starts from one request. The examples below are what a user would 
 | `ticket-to-pr` | "Take issue #212 through design, implementation and a PR." |
 | `initiative-to-prs` | "Turn this brief into tickets and take them to PRs." It writes the design, proposes the tickets, asks you once to approve the set, then runs each ticket with a worker in its own worktree. |
 | `explain-pr` | "Explain https://github.com/acme/app/pull/57 before I approve it." The session prepares the pull request in one directory, then reads it in a mode where it can read only that directory and the tracker tools you allowed, and writes a guide: intent, a map of the diff, the order to read the core hunks in, the decisions and their records, what the change reaches, the evidence, and questions for the author. Under Codex it prints the command that starts the reading session. |
-| `pr-to-merge` | "Merge the approved PRs in acme/app as they become ready." A script watches without a model, merges each approved pull request that nothing holds once GitHub allows it, and reports the rest; the skill relays those reports, answers reviews on your own pull requests, and checks each merge afterwards. Without your authorization to merge it only reports pull requests as ready. |
+| `pr-to-merge` | "Merge my PRs in acme/app as they become ready." A background watcher checks every five minutes without a model and without the session open: it requests reviewers, asks a stale approver again, re-runs a failed check once, and merges each of your pull requests (and the automated ones you name) that qualifies; other people's pull requests are left to their authors. What needs you appears at the start of your next session and in `watch status`. A watch lasts seven days from your words; without your authorization to merge it only reports pull requests as ready, and `--confirm` makes every head wait for your confirmation. |
 
 ## Workflows
 
@@ -59,13 +59,15 @@ Each workflow starts from one request. The examples below are what a user would 
 | `coordinate-sessions` | Hands units of work to worker subagents in their own worktrees, reads their report files, checks each delivery, and keeps a state document with your standing authorizations. | Claude Code, Codex |
 | `review-until-approve` | Reviews someone else's pull request in a loop and approves the reviewed head once a round is clean. | Claude Code, Codex |
 | `explain-pr` | Explains someone else's pull request in a read-only session so you can decide on approving it, with every claim anchored to a file and line. | Claude Code, Codex |
-| `pr-to-merge` | Watches the open pull requests of named repositories, merges each approved one that nothing holds as soon as GitHub allows it, reports the rest, and answers reviews on your own pull requests. | Claude Code, Codex |
+| `pr-to-merge` | Carries your own and named automated pull requests in named repositories to their merge from a background watcher, reports what needs you, and answers reviews on your own pull requests. | Claude Code, Codex |
 
 ## Review policy
 
 A finding blocks only when it is a serious defect, a security problem, an unmet acceptance criterion, or a mismatch with a related repository. A pull request with an open blocking finding stays a draft. Minor findings do not block: small ones are fixed, and the rest go into one follow-up ticket.
 
 `review-and-fix` runs one broad review and at most two rechecks of the fixes. It does not try to prove a change free of defects, and it never runs another broad review by itself; you can ask for one.
+
+`pr-to-merge` never counts an approval `review-until-approve` posted, so a person must still approve. A teammate on a Concord version from before this rule runs the older `pr-to-merge`, which counts that approval as a person's; nothing on your side prevents that.
 
 The workflows stop and ask you only for a product decision, for something only you hold, or before a hard-to-reverse action you have not authorized. Anything else is recorded on the ticket and the work continues.
 
