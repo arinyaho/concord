@@ -30,7 +30,7 @@ const { tempDir } = require('../../../hooks/test/temp-dir');
 
 function loadRunnerWithPlatform(platform) {
   const runnerPath = require.resolve('../scripts/runner/launch.js');
-  const spawnHelperPath = require.resolve('../scripts/runner/spawn-cross-platform.js');
+  const spawnHelperPath = require.resolve('../../../runtime/spawn-cross-platform.js');
   delete require.cache[runnerPath];
   delete require.cache[spawnHelperPath];
   const original = Object.getOwnPropertyDescriptor(process, 'platform');

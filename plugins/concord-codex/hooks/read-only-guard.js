@@ -2,13 +2,15 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { dataDir } = require('../skills/explain-pr/scripts/data-dir');
+const { dataDir, sessionRoot } = require('../runtime/data-dir');
 const { readAllowedTools, allToolNames, decideCodex } = require('../engine/read-only');
 
 try {
   const event = JSON.parse(fs.readFileSync(0, 'utf8'));
-  const dir = dataDir(process.env, 'codex');
-  const decision = decideCodex(event, { prsRoot: path.join(dir, 'prs'), allowedTools: allToolNames(readAllowedTools(dir)) });
+  const dir = dataDir('explain-pr', 'codex');
+  const decision = decideCodex(event, {
+    prsRoot: path.join(dir, 'prs'), allowedTools: allToolNames(readAllowedTools(dir)), sessionRoot: sessionRoot('codex'),
+  });
   if (!decision.allow) {
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {

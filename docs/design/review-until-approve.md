@@ -23,7 +23,7 @@ The agents are `claude -p` or `codex exec` processes, matching the harness the u
 
 ## Confinement
 
-No statement by the user lifts these limits. Each agent reads only its round's directory (the verifier also the result file), writes only its own output file, created empty just before it starts, has no network, home directory, or GitHub token, and leaves no session behind. The round directory is a fresh owner-only directory among `explain-pr`'s prepared pull requests. Agents are processes, not subagents, because the mode is keyed by session id and a subagent shares its parent's.
+No statement by the user lifts these limits. Each agent reads only its round's directory (the verifier also the result file), writes only its own output file, which does not exist when it starts, in an owner-only output directory created for that agent just before it starts (Claude Code's `Write` tool refuses to replace a file the session has not read, and a new directory that only this agent can write in means no file another agent left can be taken for its output), has no network, home directory, or GitHub token, and leaves no session behind. The round directory is a fresh owner-only directory among `explain-pr`'s prepared pull requests. Agents are processes, not subagents, because the mode is keyed by session id and a subagent shares its parent's.
 
 | Harness | How the limits are enforced |
 |---|---|
@@ -89,7 +89,7 @@ The user reads the finding on the pull request and answers in a session. `decide
 
 ## Text the skill posts
 
-`publish` writes the markers and composes lines from keys, classes, counts, and links. Agent text and the user's reasons are escaped: `<` becomes `&lt;`, `@` becomes `＠`, and every line is prefixed with `> `. File paths and quoted spans are not escaped but placed only in fenced code blocks, longer than any backtick run inside, where GitHub shows them literally and neither mentions nor HTML act; a path with a line break is not posted. The text outside fences is scanned: an HTML comment other than the skill's markers, or a line starting with `/`, `@`, or a bot command word, stops the review from being published, and so does the GitHub token or a token from the harness's credentials file anywhere in it.
+`publish` writes the markers and composes lines from keys, classes, counts, and links. Agent text and the user's reasons are escaped: `&` becomes `&amp;` (so no character reference spells `@` or `<`), `<` becomes `&lt;`, `@` becomes `＠`, and every line, a line ended by a lone carriage return included, is prefixed with `> `. File paths and quoted spans are not escaped but placed only in fenced code blocks, longer than any backtick run inside, where GitHub shows them literally and neither mentions nor HTML act; a path with a line break is not posted. The text outside fences is scanned: an HTML comment other than the skill's markers, or a line starting with `/`, `@`, or a bot command word (`bors`, `atlantis`, `r+`, `retest`, `ok-to-test`, `lgtm`, in any case), stops the review from being published, and so does the GitHub token or a token from the harness's credentials file anywhere in it.
 
 ## The round
 
@@ -188,7 +188,7 @@ Only the three stop cases need the user.
 - Two agent runs per event; one reviewer misses what a second would find; rejected findings are not published; runtime claims rest on reading and CI.
 - Public pull requests are not checked against related repositories; on private ones, same-owner material can reach readers the pull request lacks.
 - That the user's session never reads the pull request's content rests on the skill text: nothing confines that session, and its tools could read the round directory or the pull request.
-- Claude Code: the hook grants every read; without it the agent reads and writes nothing, and the canary log shows whether it ran. An extension that approves denied calls overrides it. Codex: `explain-pr`'s launch limits apply.
+- Claude Code: the hook grants every read; without it the agent reads and writes nothing, and the canary log shows whether it ran. An extension that approves denied calls overrides it. `--setting-sources` with no source still loads Claude Code's built-in plugins; they are part of the harness, not the user's configuration, and register no hook that runs. Codex: `explain-pr`'s launch limits apply.
 - Two machines watching one pull request both run agents and can both post within a few seconds. An author who pushes all day reaches the daily cap and waits for the user; one who pushes more often than every five minutes delays the round until they stop. A failed round costs up to four agent runs of 30 minutes each; failed rounds count against the cap only through a local counter, which deleting the notice record resets.
 - An account without write access cannot resolve threads or set the label. Anyone with write access can edit the skill's comments or remove `review-blocked`; anyone posting as the account can write markers.
 - A push just before submission leaves the approval on the reviewed head.

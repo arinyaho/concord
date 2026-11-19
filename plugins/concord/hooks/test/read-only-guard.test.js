@@ -14,7 +14,7 @@ function setup() {
   const prepared = path.join(dir, 'prs', 'p');
   fs.mkdirSync(prepared, { recursive: true });
   fs.mkdirSync(path.join(dir, 'modes'));
-  fs.writeFileSync(path.join(dir, 'modes', 'A'), `${fs.realpathSync(prepared)}\n`);
+  fs.writeFileSync(path.join(dir, 'modes', 'A'), JSON.stringify({ kind: 'read', dir: fs.realpathSync(prepared) }));
   return { dir, prepared: fs.realpathSync(prepared) };
 }
 
@@ -46,11 +46,15 @@ test('a subagent call in a session in the mode is denied', () => {
   assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny');
 });
 
-test('a mode file that exists but cannot be read, or is empty, denies (fail closed)', () => {
-  const { dir } = setup();
+test('a mode file that exists but cannot be read or parsed denies every call (fail closed)', () => {
+  const { dir, prepared } = setup();
   fs.mkdirSync(path.join(dir, 'modes', 'D'));
   fs.writeFileSync(path.join(dir, 'modes', 'E'), '');
-  for (const sid of ['D', 'E']) {
+  fs.writeFileSync(path.join(dir, 'modes', 'F'), `${prepared}\n`);
+  fs.writeFileSync(path.join(dir, 'modes', 'G'), '{"kind":"agent"');
+  for (const sid of ['D', 'E', 'F', 'G']) {
+    const read = run(dir, JSON.stringify({ session_id: sid, tool_name: 'Read', tool_input: { file_path: path.join(prepared, 'x') } }));
+    assert.equal(JSON.parse(read.stdout).hookSpecificOutput.permissionDecision, 'deny', sid);
     const r = run(dir, bash(sid));
     assert.equal(r.status, 0);
     assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny', sid);
@@ -78,7 +82,7 @@ test('the hook reads the Claude Code data directory even when the session id is 
   const prepared = path.join(dir, 'prs', 'p');
   fs.mkdirSync(prepared, { recursive: true });
   fs.mkdirSync(path.join(dir, 'modes'));
-  fs.writeFileSync(path.join(dir, 'modes', 'A'), `${fs.realpathSync(prepared)}\n`);
+  fs.writeFileSync(path.join(dir, 'modes', 'A'), JSON.stringify({ kind: 'read', dir: fs.realpathSync(prepared) }));
   const env = { ...process.env, CLAUDE_CONFIG_DIR: base, CODEX_HOME: tempDir('rog-codex-') };
   delete env.EXPLAIN_PR_DIR;
   delete env.CLAUDE_CODE_SESSION_ID;

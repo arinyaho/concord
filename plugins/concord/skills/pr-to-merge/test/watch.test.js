@@ -8,7 +8,7 @@ const assert = require('node:assert/strict');
 const { spawn, spawnSync } = require('node:child_process');
 const { world, pr, approve, SCRIPT } = require('./world');
 const { tempDir } = require('../../../hooks/test/temp-dir');
-const runtime = require('../scripts/watcher');
+const runtime = require('../../../runtime/watcher');
 const { entryFromArgs, addEntry } = require(SCRIPT);
 
 const ROOT = path.join(__dirname, '..', '..', '..', '..', '..');
@@ -109,7 +109,7 @@ test('watch add starts one detached watcher that outlives it, a second add start
 test('a lock taken under another locale still reads as held', { skip: process.platform === 'win32' }, () => {
   const dir = tempDir('ptm-lock-');
   const file = path.join(dir, 'lock');
-  const holder = spawn(process.execPath, ['-e', `require(${JSON.stringify(require.resolve('../scripts/watcher'))}).takeLock(${JSON.stringify(file)}); setTimeout(() => {}, 20000)`], { env: { ...process.env, LC_ALL: 'ko_KR.UTF-8', LANG: 'ko_KR.UTF-8' }, stdio: 'ignore' });
+  const holder = spawn(process.execPath, ['-e', `require(${JSON.stringify(require.resolve('../../../runtime/watcher'))}).takeLock(${JSON.stringify(file)}); setTimeout(() => {}, 20000)`], { env: { ...process.env, LC_ALL: 'ko_KR.UTF-8', LANG: 'ko_KR.UTF-8' }, stdio: 'ignore' });
   try {
     assert.ok(until(() => fs.existsSync(file)));
     assert.equal(runtime.running(runtime.readJson(file, null)), true);
@@ -161,9 +161,9 @@ test('the watcher runs the check from the newest installed copy across both harn
   const newest = installed(home, '.codex', '.codex-plugin', 'concord', '100.0.0-beta.10');
   installed(home, '.codex', '.codex-plugin', 'concord', '100.0.0-beta.9');
   installed(home, '.claude', '.claude-plugin', 'other', '200.0.0');
-  const bare = spawnSync(process.execPath, ['-e', `console.log(require(${JSON.stringify(require.resolve('../scripts/watcher'))}).locate('pr-to-merge', 'pr-to-merge.js', 'own'))`], { env: { ...w.env, HOME: tempDir('ptm-empty-') }, encoding: 'utf8' });
+  const bare = spawnSync(process.execPath, ['-e', `console.log(require(${JSON.stringify(require.resolve('../../../runtime/watcher'))}).locate('pr-to-merge', 'pr-to-merge.js', 'own'))`], { env: { ...w.env, HOME: tempDir('ptm-empty-') }, encoding: 'utf8' });
   assert.equal(bare.stdout.trim(), 'own', 'no installed copy: the running one');
-  const located = spawnSync(process.execPath, ['-e', `console.log(require(${JSON.stringify(require.resolve('../scripts/watcher'))}).locate('pr-to-merge', 'pr-to-merge.js', ${JSON.stringify(SCRIPT)}))`], { env: w.env, encoding: 'utf8' });
+  const located = spawnSync(process.execPath, ['-e', `console.log(require(${JSON.stringify(require.resolve('../../../runtime/watcher'))}).locate('pr-to-merge', 'pr-to-merge.js', ${JSON.stringify(SCRIPT)}))`], { env: w.env, encoding: 'utf8' });
   assert.equal(located.stdout.trim(), newest);
   writeList(w, listOf(entry('--authorized', TODAY)));
   const r = spawnSync(process.execPath, [SCRIPT, 'watcher', '--harness', 'claude'], { env: w.env, encoding: 'utf8', timeout: 20000 });

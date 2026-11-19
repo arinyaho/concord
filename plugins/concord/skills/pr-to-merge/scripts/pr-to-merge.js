@@ -10,7 +10,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const runtime = require('./watcher');
+const runtime = require('../../../runtime/watcher');
 
 const SKILL = 'pr-to-merge';
 const USAGE = `usage:

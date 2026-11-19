@@ -4,12 +4,12 @@ const path = require('node:path');
 const { readStdinEvent } = require('../adapters/claude-code/event');
 const { readNorthStar, mergeSessions, renderCharter, catchUpSessions } = require('../core/charter');
 const { readMode } = require('../core/read-only');
-const { dataDir } = require('../skills/explain-pr/scripts/data-dir');
+const { dataDir } = require('../runtime/data-dir');
 
 // A session in explain-pr's read-only mode has read a pull request; its transcript is never folded into the state.
 function inReadOnlyMode(sid) {
   try {
-    return readMode(dataDir(process.env, 'claude'), sid) !== null;
+    return readMode(dataDir('explain-pr', 'claude'), sid) !== null;
   } catch {
     return true;
   }
@@ -19,10 +19,10 @@ const CONVENTION =
   'Tag durable decisions and open items inline so a hook can persist them across sessions: ' +
   '`DECISION:` / `OPEN-LOOP:` / `NEXT:` / `RESOLVED:`.';
 
-// The background watchers' pending lines, shown to the user (see the pr-to-merge skill's watcher.js).
+// The background watchers' pending lines, shown to the user (see runtime/watcher.js).
 function withNotices(context) {
   try {
-    return require('../skills/pr-to-merge/scripts/watcher').sessionStartOutput(context, 'claude');
+    return require('../runtime/watcher').sessionStartOutput(context, 'claude');
   } catch {
     return context;
   }

@@ -16,6 +16,8 @@ const codexAdaptersDir = path.join(repoRoot, 'plugins/concord/adapters/codex');
 const engineDir = path.join(codexRoot, 'engine');
 const sharedSkillsDir = path.join(repoRoot, 'plugins/concord/skills');
 const packagedSkillsDir = path.join(codexRoot, 'skills');
+const runtimeDir = path.join(repoRoot, 'plugins/concord/runtime');
+const packagedRuntimeDir = path.join(codexRoot, 'runtime');
 
 fs.rmSync(engineDir, { recursive: true, force: true });
 fs.mkdirSync(engineDir, { recursive: true });
@@ -36,5 +38,11 @@ for (const skill of ['work-report', 'ticket-writing', 'ticket-to-pr', 'proposal-
   fs.cpSync(path.join(sharedSkillsDir, skill), path.join(packagedSkillsDir, skill), { recursive: true, filter: (src) => path.basename(src) !== 'test' || path.dirname(src) !== path.join(sharedSkillsDir, skill) });
   n++;
 }
+
+// The shared runtime goes to the same relative path, so skill scripts and hooks require it the same way in both
+// packages; its tests stay behind.
+fs.rmSync(packagedRuntimeDir, { recursive: true, force: true });
+fs.cpSync(runtimeDir, packagedRuntimeDir, { recursive: true, filter: (src) => src !== path.join(runtimeDir, 'test') });
+n++;
 
 console.log(`bundled ${n} files into engine/`);

@@ -55,9 +55,22 @@ test('codex review-until-approve is the shared skill without its tests and carri
   assert.deepStrictEqual(list(bundled), list(src));
   for (const f of list(src)) assert.ok(fs.readFileSync(path.join(src, f)).equals(fs.readFileSync(path.join(bundled, f))), `${f} drifted — re-run node plugins/concord-codex/bin/bundle.mjs`);
   assert.ok(!fs.existsSync(path.join(bundled, 'test')));
-  // The round's runner travels with the skill: nothing under its scripts reaches outside the skill directory.
+  // The round's runner travels with the skill: nothing under its scripts reaches outside the skill directory except
+  // the shared runtime, which the bundle puts at the same relative path.
   assert.strictEqual(typeof require(path.join(bundled, 'scripts/runner/review.js')).runReview, 'function');
-  for (const f of list(bundled).filter((name) => name.endsWith('.js'))) assert.doesNotMatch(fs.readFileSync(path.join(bundled, f), 'utf8'), /require\([^)]*(\.\.\/\.\.|engine|core)[^)]*\)/, f);
+  for (const f of list(bundled).filter((name) => name.endsWith('.js'))) {
+    const text = fs.readFileSync(path.join(bundled, f), 'utf8').replace(/require\('(\.\.\/)+runtime\/[\w-]+'\)/g, '');
+    assert.doesNotMatch(text, /require\([^)]*(\.\.\/\.\.|engine|core)[^)]*\)/, f);
+  }
+});
+
+test('codex runtime is the shared runtime without its tests', () => {
+  const src = path.join(REPO, 'plugins/concord/runtime');
+  const bundled = path.join(REPO, 'plugins/concord-codex/runtime');
+  const list = (root) => fs.readdirSync(root, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => path.relative(root, path.join(e.parentPath, e.name))).filter((f) => !f.startsWith('test' + path.sep)).sort();
+  assert.deepStrictEqual(list(bundled), list(src));
+  for (const f of list(src)) assert.ok(fs.readFileSync(path.join(src, f)).equals(fs.readFileSync(path.join(bundled, f))), `runtime/${f} drifted — re-run node plugins/concord-codex/bin/bundle.mjs`);
+  assert.ok(!fs.existsSync(path.join(bundled, 'test')));
 });
 
 test('codex pr-to-merge is the shared skill without its tests', () => {
