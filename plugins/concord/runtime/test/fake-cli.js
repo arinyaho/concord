@@ -25,7 +25,8 @@ function act(output) {
 }
 
 if (args[0] === 'sandbox') {
-  // The pre-flight: `sandbox <profile> -C <cwd> -- <command>`.
+  // The pre-flight: `sandbox <profile> -- <command>`; like `codex sandbox`, it refuses -C without a named profile.
+  if (args.includes('-C')) process.exit(2);
   const cmd = args.slice(args.indexOf('--') + 1);
   record({ sandbox: cmd });
   const home = require('node:os').homedir();

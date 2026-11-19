@@ -137,9 +137,10 @@ test('codex: the argv is exactly the designed one, every configured MCP server i
   const all = calls();
   const profile = ['-c', 'default_permissions="concord"', '-c', `permissions.concord.filesystem={":minimal"="read",${JSON.stringify(round)}="read",${JSON.stringify(outputDir)}="write","/tmp"="none","/var/tmp"="none"}`];
   assert.deepEqual(all.filter((c) => c.sandbox).map((c) => c.args), [
-    ['sandbox', ...profile, '-C', round, '--', '/bin/ls', round],
-    ['sandbox', ...profile, '-C', round, '--', '/bin/ls', require('node:os').homedir()],
+    ['sandbox', ...profile, '--', '/bin/ls', round],
+    ['sandbox', ...profile, '--', '/bin/ls', require('node:os').homedir()],
   ]);
+  assert.deepEqual(all.filter((c) => c.sandbox).map((c) => c.cwd), [round, round]);
   const exec = all.find((c) => c.args[0] === 'exec');
   assert.deepEqual(exec.args, ['exec', '--ephemeral', '--skip-git-repo-check', '-C', round, ...profile,
     '-c', 'web_search="disabled"', '--disable', 'apps', '--disable', 'browser_use', '--disable', 'computer_use',

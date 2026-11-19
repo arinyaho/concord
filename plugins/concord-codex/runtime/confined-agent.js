@@ -79,7 +79,7 @@ function codexArgs({ cwd, profile, serversOff, model, effort, prompt }) {
 
 function sandboxRun(bin, profile, cwd, command, env) {
   try {
-    const r = spawnSync(crossPlatformCommand(bin, cwd), crossPlatformArgs(['sandbox', ...profile, '-C', cwd, '--', ...command], needsDoubleEscape(bin, cwd)),
+    const r = spawnSync(crossPlatformCommand(bin, cwd), crossPlatformArgs(['sandbox', ...profile, '--', ...command], needsDoubleEscape(bin, cwd)),
       crossPlatformOpts({ cwd, env, stdio: 'ignore', timeout: PREFLIGHT_MS, windowsHide: true }));
     return r.error ? null : r.status;
   } catch {
@@ -87,7 +87,8 @@ function sandboxRun(bin, profile, cwd, command, env) {
   }
 }
 
-// Run under the profile without a model: a listing of the readable directory must succeed (the sandbox runs), the
+// Run under the profile without a model, in the agent's working directory (`codex sandbox` takes `-C` only with a
+// named profile): a listing of the readable directory must succeed (the sandbox runs), the
 // listing of the user's home must be refused, and for a writable session the network must be refused.
 function codexPreflight({ bin, profile, cwd, env, network }) {
   const list = (dir) => (isWindows ? ['cmd.exe', '/d', '/c', 'dir', dir] : ['/bin/ls', dir]);
