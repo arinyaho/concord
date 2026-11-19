@@ -8,10 +8,16 @@ const { extractFacts, extractRationale, extractRationaleText } = require('../eng
 const { emptyModel, mergeModel } = require('../engine/state');
 const { writeNorthStarIfAbsent, firstSubstantiveUserMessage, readNorthStar } = require('../engine/charter');
 const { resolveStateDirFromCwd } = require('../engine/statedir');
+const { confinedCwd } = require('../engine/read-only');
+const { dataDir, sessionRoot } = require('../runtime/data-dir');
+
+// A confined agent or headless session a script started: its working directory is under pr-to-merge's
+// session-worktree root or in a marked round directory. Codex loads this plugin's hooks there too; they do nothing.
+const confined = (cwd) => confinedCwd(cwd || process.cwd(), { sessionRoot: sessionRoot('codex'), prsRoot: path.join(dataDir('explain-pr', 'codex'), 'prs') });
 
 function main() {
-  const { sessionId, transcriptPath, lastAssistantMessage } = readStdinEvent('stop');
-  if (!sessionId || !transcriptPath) return;
+  const { sessionId, transcriptPath, lastAssistantMessage, cwd } = readStdinEvent('stop');
+  if (!sessionId || !transcriptPath || confined(cwd)) return;
 
   const sid = path.basename(String(sessionId));
   // State dir = cwd-derived (~/.codex/concord/projects/<slug>/state), NOT the
