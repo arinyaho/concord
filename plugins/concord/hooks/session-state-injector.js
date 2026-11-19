@@ -19,10 +19,10 @@ const CONVENTION =
   'Tag durable decisions and open items inline so a hook can persist them across sessions: ' +
   '`DECISION:` / `OPEN-LOOP:` / `NEXT:` / `RESOLVED:`.';
 
-// The background watchers' pending lines, shown to the user (see the pr-to-merge skill's watcher.js).
+// The background watchers' pending lines, shown to the user (see runtime/watcher.js).
 function withNotices(context) {
   try {
-    return require('../skills/pr-to-merge/scripts/watcher').sessionStartOutput(context, 'claude');
+    return require('../runtime/watcher').sessionStartOutput(context, 'claude');
   } catch {
     return context;
   }

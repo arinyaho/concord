@@ -7,14 +7,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
+const { baseDir } = require('./data-dir');
 
-// Concord's per-user state directory of a harness. The harness is always passed: a watcher and its check run outside
-// any harness, so their environment cannot tell.
-function baseDir(harness, env = process.env) {
-  if (harness === 'claude') return path.join(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'concord');
-  if (harness === 'codex') return path.join(env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'concord');
-  throw new Error(`unknown harness ${harness}`);
-}
 
 function ownerDir(dir) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
