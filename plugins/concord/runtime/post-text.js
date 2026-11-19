@@ -9,9 +9,13 @@ const { spawnSync } = require('node:child_process');
 // Bot command words, matched case-insensitively as the first word of a line.
 const BOT_WORDS = ['bors', 'atlantis', 'r+', 'retest', 'ok-to-test', 'lgtm'];
 
-// Prose: `<` and `@` cannot open HTML or a mention, and every line is a quote line.
+// GitHub ends a line at CRLF, LF, or a lone CR.
+const LINES = /\r\n|\r|\n/;
+
+// Prose: `&` cannot spell a character reference (`&#64;` renders as a mention), `<` cannot open HTML, `@` cannot
+// mention, and every line is a quote line.
 function escapeText(text) {
-  return String(text).replace(/</g, '&lt;').replace(/@/g, '＠').split(/\r?\n/).map((l) => `> ${l}`).join('\n');
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/@/g, '＠').split(LINES).map((l) => `> ${l}`).join('\n');
 }
 
 // A fenced block that GitHub shows literally: its fence is longer than any backtick run inside.
@@ -31,7 +35,7 @@ function fencePath(p) {
 function outsideFences(text) {
   const out = [];
   let open = 0;
-  for (const line of text.split(/\r?\n/)) {
+  for (const line of text.split(LINES)) {
     const run = /^ {0,3}(`{3,})(.*)$/.exec(line);
     if (open) {
       if (run && run[1].length >= open && !run[2].trim()) open = 0;

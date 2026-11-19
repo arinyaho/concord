@@ -83,7 +83,9 @@ function allToolNames(list) {
 
 // Real path of an absolute path p; for a path that does not exist yet, the real path of its
 // longest existing ancestor plus the remaining segments. Callers reject ".." segments first,
-// so path.resolve cannot fold one away.
+// so path.resolve cannot fold one away. A remaining segment that exists but cannot be resolved,
+// such as a symlink whose target is missing, makes the path unresolvable (null): a write through
+// it would create the target wherever the link points.
 function resolveReal(p) {
   if (typeof p !== 'string' || !path.isAbsolute(p)) return null;
   let cur = path.resolve(p);
@@ -92,6 +94,10 @@ function resolveReal(p) {
     try {
       return path.join(fs.realpathSync(cur), ...rest.reverse());
     } catch {
+      try {
+        fs.lstatSync(cur);
+        return null;
+      } catch { /* does not exist: resolve its parent */ }
       const parent = path.dirname(cur);
       if (parent === cur) return null;
       rest.push(path.basename(cur));
@@ -229,7 +235,7 @@ const AGENT_MARKER = '.concord-confined-agent';
 // The paths an apply_patch input names, resolved against cwd; null when one has a ".." segment or none is named.
 function patchPaths(patch, cwd) {
   if (typeof patch !== 'string') return null;
-  const paths = [...patch.matchAll(/^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm)].map((m) => m[1].trim());
+  const paths = [...patch.matchAll(/^\s*\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm)].map((m) => m[1].trim());
   if (!paths.length || paths.some(hasDotDot)) return null;
   return paths.map((p) => path.resolve(cwd, p));
 }

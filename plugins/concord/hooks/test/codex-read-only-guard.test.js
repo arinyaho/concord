@@ -112,6 +112,8 @@ test('a headless session under the session-worktree root may patch inside its tw
     assert.deepEqual(JSON.parse(run(env, patch(worktree, ...files)).stdout), confinedDeny('worktree'), files.join());
   }
   assert.deepEqual(JSON.parse(run(env, JSON.stringify({ ...fixture('apply_patch', worktree), tool_input: { command: 'no paths' } })).stdout), confinedDeny('worktree'));
+  const indented = JSON.stringify({ ...fixture('apply_patch', worktree), tool_input: { command: '*** Begin Patch\n*** Update File: a.txt\n@@\n+x\n  *** Add File: /etc/evil\n+y\n*** End Patch' } });
+  assert.deepEqual(JSON.parse(run(env, indented).stdout), confinedDeny('worktree'));
 });
 
 test('a headless session is denied every MCP tool and may run shell commands', () => {

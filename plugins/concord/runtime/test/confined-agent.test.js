@@ -180,7 +180,7 @@ test('codex writable session: the pre-flight also needs the network refused; the
   assert.deepEqual(await runConfined(ok.opts), { status: 'ok', output: '{"ok":true}' });
   const exec = ok.calls().find((c) => c.args[0] === 'exec');
   assert.equal(exec.cwd, ok.worktree);
-  assert.ok(exec.args.includes(`permissions.concord.filesystem={":minimal"="read",${JSON.stringify(ok.worktree)}="read",${JSON.stringify(ok.session)}="read",${JSON.stringify(ok.worktree)}="write",${JSON.stringify(ok.session)}="write","/tmp"="none","/var/tmp"="none"}`));
+  assert.ok(exec.args.includes(`permissions.concord.filesystem={":minimal"="read",${JSON.stringify(ok.worktree)}="write",${JSON.stringify(ok.session)}="write","/tmp"="none","/var/tmp"="none"}`));
   assert.ok(ok.calls().some((c) => c.sandbox && c.sandbox.includes('curl')));
 
   // A worktree outside the session-worktree root, where the Codex hook would not know the session, does not start.

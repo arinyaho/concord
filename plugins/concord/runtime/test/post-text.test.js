@@ -17,6 +17,20 @@ test('escaped text keeps no working mention or HTML, and every line is a quote l
   assert.equal(refusal(out, { markers: MARKERS }), null);
 });
 
+test('a character reference cannot spell a mention, and a lone CR still starts a quote line', () => {
+  for (const t of ['&#64;octocat', '&commat;octocat', '&#x40;octocat']) {
+    const out = escapeText(t);
+    assert.equal(out, `> &amp;${t.slice(1)}`);
+    assert.ok(!/&(#\d+|#x[0-9a-f]+|[a-z]+);/i.test(out.replace(/&amp;|&lt;/g, '')), out);
+  }
+  assert.equal(escapeText('fine\r/approve\r\nlgtm'), '> fine\n> /approve\n> lgtm');
+  assert.equal(refusal('fine\r/approve'), 'command line');
+  assert.equal(refusal('fine\rlgtm'), 'bot command');
+  // A fence closed by a lone CR is a fence to GitHub, and so to the scan.
+  assert.equal(refusal('```\r/approve\r```\r/merge'), 'command line');
+  assert.equal(refusal('```\r/approve\r```'), null);
+});
+
 test('a span holding a backtick run gets a longer fence, so it closes only at its own end', () => {
   for (const span of ['a ``` b', '````\n<!-- x -->\n@bob', '`x`', 'plain']) {
     const block = fence(span);

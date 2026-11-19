@@ -97,7 +97,12 @@ test('writable worktree: after the canary, Edit and Write inside the two directo
     ['Write', { file_path: path.join(worktree, 'new.js'), content: '' }],
     ['Write', { file_path: path.join(session, 'result.json'), content: '{}' }],
   ]) assert.equal(run(data, 'W', tool, input), 'allow', `${tool} ${JSON.stringify(input)}`);
+  // A symlink in the worktree whose target does not exist yet: a write through it would create the target outside.
+  fs.symlinkSync(path.join(gitDir, 'hooks-new'), path.join(worktree, 'dangling'));
   for (const [tool, input] of [
+    ['Write', { file_path: path.join(worktree, 'dangling'), content: '' }],
+    ['Edit', { file_path: path.join(worktree, 'dangling'), old_string: 'x', new_string: 'y' }],
+    ['Write', { file_path: path.join(worktree, 'dangling', 'x'), content: '' }],
     ['Bash', { command: 'true' }],
     ['Read', { file_path: path.join(gitDir, 'config') }],
     ['Write', { file_path: path.join(gitDir, 'config'), content: '' }],

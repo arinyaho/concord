@@ -10,7 +10,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
-const { dataDir, sessionRoot } = require('./data-dir');
+const { dataDir, ensureDataDir, sessionRoot } = require('./data-dir');
 const { configuredServers, BARE } = require('./codex-servers');
 const { isWindows, crossPlatformOpts, crossPlatformArgs, crossPlatformCommand, needsDoubleEscape } = require('./spawn-cross-platform');
 
@@ -54,8 +54,9 @@ function claudeArgs({ kind, sessionId, model, effort, prompt }) {
 }
 
 // Codex: explain-pr's reading-session switches adapted for exec, as a permissions profile on the command line.
+// A directory appears once (a key may not repeat in a TOML table); `write` includes reading.
 function codexProfile({ reads, writes }) {
-  const entries = [['":minimal"', 'read'], ...reads.map((d) => [JSON.stringify(d), 'read']), ...writes.map((d) => [JSON.stringify(d), 'write']),
+  const entries = [['":minimal"', 'read'], ...reads.filter((d) => !writes.includes(d)).map((d) => [JSON.stringify(d), 'read']), ...writes.map((d) => [JSON.stringify(d), 'write']),
     ['"/tmp"', 'none'], ['"/var/tmp"', 'none']];
   return ['-c', 'default_permissions="concord"', '-c', `permissions.concord.filesystem={${entries.map(([k, v]) => `${k}="${v}"`).join(',')}}`];
 }
@@ -205,7 +206,8 @@ async function runConfined(opts) {
     let log = null;
     let prompt = opts.prompt;
     if (harness === 'claude') {
-      const modes = dataDir('explain-pr', 'claude', env);
+      let modes;
+      try { modes = ensureDataDir('explain-pr', 'claude', env); } catch { return { status: 'cannot start' }; }
       const sessionId = crypto.randomUUID();
       log = path.join(modes, 'modes', `${sessionId}.log`);
       const canary = path.join(reads[0], `.canary-${sessionId}`);
@@ -215,13 +217,13 @@ async function runConfined(opts) {
       cleanup.push(() => readOnly.removeMode(modes, sessionId), () => fs.rmSync(log, { force: true }));
       try {
         readOnly.writeMode(modes, sessionId, mode);
+        // A review agent starts in an empty directory outside the round directory, so nothing there loads as settings.
+        if (kind === 'agent') {
+          childCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-agent-'));
+          cleanup.push(() => fs.rmSync(childCwd, { recursive: true, force: true }));
+        }
       } catch {
         return { status: 'cannot start' };
-      }
-      // A review agent starts in an empty directory outside the round directory, so nothing there loads as settings.
-      if (kind === 'agent') {
-        childCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'concord-agent-'));
-        cleanup.push(() => fs.rmSync(childCwd, { recursive: true, force: true }));
       }
       extraEnv = { EXPLAIN_PR_DIR: modes };
       prompt = `Your first tool call must be a Read of ${canary}; it is denied, and that denial turns on your tools.\n\n${prompt}`;
@@ -239,8 +241,8 @@ async function runConfined(opts) {
       if (kind === 'agent') {
         // The Codex hook knows a confined agent by this marker in its round directory under prs/.
         const marker = path.join(root, path.relative(root, cwd).split(path.sep)[0], readOnly.AGENT_MARKER);
-        fs.writeFileSync(marker, '');
         cleanup.push(() => fs.rmSync(marker, { force: true }));
+        try { fs.writeFileSync(marker, ''); } catch { return { status: 'cannot start' }; }
       }
       args = codexArgs({ cwd, profile, serversOff, model, effort, prompt });
     }
