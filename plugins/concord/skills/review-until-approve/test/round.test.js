@@ -196,6 +196,33 @@ test('a reply posted while a round runs, or before a decision approves, stays pe
   assert.deepEqual(run(w, ['state', 'o/r', '5']).out[0].pending, ['reply']);
   run(w, ['decide', 'o/r', '5', '1.1', 'keep', '--reason', 'It stays.']);
   assert.deepEqual(run(w, ['state', 'o/r', '5']).out[0].pending, ['reply']);
+  // A reply that arrives while the agents run was not in the round's read: after the round it is still pending.
+  const r = world();
+  r.update((v) => { v.reviews.push(stateReview(r, { head: r.mergeBase, findings: [finding(r, { class: 'minor' })] })); v.threads.push(thread('1.1')); });
+  const late = { databaseId: 9e8, author: { login: 'dev' }, body: 'One more thing.', createdAt: new Date().toISOString(), lastEditedAt: null, url: 'https://github.com/o/r/pull/5#discussion_r8' };
+  r.agents({ reviewer: [{ findings: [] }], verifier: [{ findings: [], verdicts: [] }], inject: { file: path.join(r.dir, 'world.json'), reply: late } });
+  assert.deepEqual(events(run(r, ['round', 'o/r', '5'])), ['published']);
+  assert.deepEqual(run(r, ['state', 'o/r', '5']).out[0].pending, ['reply']);
+});
+
+test('a stopped round stops its agent, removes its round directory, and frees its lock', async () => {
+  const w = world();
+  w.agents({ reviewer: [proposal], verifier: [{ findings: [], verdicts: [] }], sleep: 60000 });
+  const { spawn } = require('node:child_process');
+  const env = { PATH: `${w.bin}${path.delimiter}${process.env.PATH}`, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR || '/tmp', CLAUDE_CONFIG_DIR: w.config, GH_TOKEN: TOKEN,
+    GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: `url.file://${path.join(w.dir, 'remote')}/.insteadOf`, GIT_CONFIG_VALUE_0: 'https://github.com/', GIT_CONFIG_KEY_1: 'protocol.file.allow', GIT_CONFIG_VALUE_1: 'always' };
+  const child = spawn(process.execPath, [require('./world').SCRIPT, 'round', 'o/r', '5', '--harness', 'claude'], { env, stdio: 'ignore' });
+  const marker = path.join(w.bin, 'sleeping');
+  for (let i = 0; i < 600 && !fs.existsSync(marker); i++) await new Promise((r) => setTimeout(r, 100));
+  assert.ok(fs.existsSync(marker), 'the agent started');
+  const agentPid = Number(fs.readFileSync(marker, 'utf8'));
+  child.kill('SIGTERM');
+  await new Promise((r) => child.once('exit', r));
+  await new Promise((r) => setTimeout(r, 300));
+  assert.throws(() => process.kill(agentPid, 0), 'the agent is stopped');
+  assert.deepEqual(leftovers(w).prs, []);
+  assert.deepEqual(leftovers(w).rounds, []);
+  assert.ok(!fs.existsSync(path.join(w.config, 'concord', 'review-until-approve', 'locks', 'o__r__5__rev.lock')));
 });
 
 test('an asked finding is closed only by the user or by fixed, whatever the verifier says', () => {

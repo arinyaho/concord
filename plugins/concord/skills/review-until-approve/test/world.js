@@ -117,6 +117,7 @@ if (b.inject && role === 'verifier') {
   const w = JSON.parse(fs.readFileSync(b.inject.file, 'utf8'));
   if (b.inject.review) w.reviews.push(b.inject.review);
   if (b.inject.comment) w.comments.push(b.inject.comment);
+  if (b.inject.reply) w.threads[0].comments.nodes.push(b.inject.reply);
   fs.writeFileSync(b.inject.file, JSON.stringify(w));
 }
 const hook = (tool_name, tool_input) => {
@@ -126,6 +127,10 @@ const hook = (tool_name, tool_input) => {
 if (b.start !== 'nohook') {
   hook('Read', { file_path: mode.canary });
   if (hook('Write', { file_path: mode.output }) !== 'allow') process.exit(1);
+}
+if (b.sleep) {
+  fs.writeFileSync(path.join(here, 'sleeping'), String(process.pid));
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, b.sleep);
 }
 const list = b[role] || [];
 const output = list[Math.min(n, list.length - 1)];

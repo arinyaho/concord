@@ -575,8 +575,10 @@ function publish(ctx, { state, prev, texts, place, unverified, newKeys = [], car
     answered: s.findings.filter((x) => x.status === 'answered' && prev?.findings.find((p) => p.key === x.key)?.status !== 'answered').length,
     ...t, ...(res.url && link(res.url) && { link: res.url }),
   }];
+  // The review posted may be the one composed again after a position error, which can overflow where the first did not.
+  if (res.review.overflow) cond.why = [...new Set([...cond.why.filter((w) => w !== 'overflow'), 'overflow'])];
   if (res.review.event !== 'APPROVE') out[0].why = cond.why;
-  if (review.overflow) out.push({ event: 'question', ask: 'overflow', link: ctx.view.url });
+  if (res.review.overflow) out.push({ event: 'question', ask: 'overflow', link: ctx.view.url });
   return out;
 }
 
@@ -637,11 +639,18 @@ function extract(gitDir, rev, into) {
 function prepare(ctx, rangeBase) {
   const { repo, n, view, f, gitDir, mergeBase, harness } = ctx;
   fs.mkdirSync(prsDir(harness), { recursive: true, mode: 0o700 });
-  // A round directory a day old belongs to a round that was killed: no round lives that long.
-  for (const e of fs.readdirSync(prsDir(harness)).filter((x) => x.startsWith('rua-'))) {
-    const p = path.join(prsDir(harness), e);
-    try { if (Date.now() - fs.statSync(p).mtimeMs > DAY) fs.rmSync(p, { recursive: true, force: true }); } catch { /* vanished */ }
-  }
+  // A round, work, or git directory a day old belongs to a round that was killed: no round lives that long.
+  const sweep = (dir, prefix) => {
+    let names = [];
+    try { names = fs.readdirSync(dir).filter((x) => x.startsWith(prefix)); } catch { return; }
+    for (const e of names) {
+      const p = path.join(dir, e);
+      try { if (Date.now() - fs.statSync(p).mtimeMs > DAY) fs.rmSync(p, { recursive: true, force: true }); } catch { /* vanished */ }
+    }
+  };
+  sweep(prsDir(harness), 'rua-');
+  sweep(path.join(ctx.data, 'rounds'), 'r-');
+  sweep(os.tmpdir(), 'rua-git-');
   const dir = fs.mkdtempSync(path.join(prsDir(harness), `rua-${repo.replace('/', '__')}__${n}-`));
   ctx.roundDir = dir;
   OWNED.add(dir);
@@ -837,12 +846,23 @@ function readView(ctx) {
   return true;
 }
 // What this process must remove if it is stopped: the round directory (it can hold private material), the work and
-// git directories, and its lock. A stopped agent finds its round directory gone; its mode file names nothing then.
+// git directories, and its lock. A running agent is stopped first: it runs in its own process group, which a signal to
+// this process does not reach, and its time and size limits are timers in this process.
 const OWNED = new Set();
 let LOCK = null;
+// ponytail: children are found with `ps`, so on Windows a running agent is not stopped; a job object would close it.
+function stopChildren() {
+  const r = spawnSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8' });
+  for (const line of (r.stdout || '').split('\n')) {
+    const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+    if (ppid !== process.pid || !pid) continue;
+    for (const target of [-pid, pid]) { try { process.kill(target, 'SIGKILL'); } catch { /* gone */ } }
+  }
+}
 function trapSignals() {
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     process.on(sig, () => {
+      stopChildren();
       for (const d of OWNED) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
       if (LOCK) { try { releaseLock(LOCK); } catch { /* best effort */ } }
       process.exit(130);
