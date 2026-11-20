@@ -110,7 +110,7 @@ const mode = JSON.parse(fs.readFileSync(path.join(process.env.EXPLAIN_PR_DIR, 'm
 const counter = path.join(here, role + '.count');
 const n = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0;
 fs.writeFileSync(counter, String(n + 1));
-fs.appendFileSync(path.join(here, 'agents.jsonl'), JSON.stringify({ role, env: process.env, dir: mode.dir, files: fs.readdirSync(mode.dir) }) + '\\n');
+fs.appendFileSync(path.join(here, 'agents.jsonl'), JSON.stringify({ role, args: args.slice(0, -1), env: process.env, dir: mode.dir, files: fs.readdirSync(mode.dir) }) + '\\n');
 if (b.start === 'fail') process.exit(1);
 // Another round publishing while this one runs: a state review appears in the world before this agent finishes.
 if (b.inject && role === 'verifier') {
@@ -170,6 +170,8 @@ function world({ base = { 'a.js': 'one\ntwo\nthree\n' }, files = { 'a.js': 'one\
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, 'gh'), FAKE_GH(dir), { mode: 0o755 });
   fs.writeFileSync(path.join(bin, 'claude'), FAKE_AGENT, { mode: 0o755 });
+  // Fake system notifiers record each notification in notifications.jsonl.
+  for (const n of ['osascript', 'notify-send']) fs.writeFileSync(path.join(bin, n), `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(path.join(dir, 'notifications.jsonl'))}, JSON.stringify(process.argv.slice(2)) + '\\n');\n`, { mode: 0o755 });
   const config = path.join(dir, 'claude-config');
   const w = {
     login, private: false, reviews: [], threads: [], comments: [], perms: {}, fail: [],
@@ -204,16 +206,16 @@ function world({ base = { 'a.js': 'one\ntwo\nthree\n' }, files = { 'a.js': 'one\
       self.update((v) => { v.pr.headRefOid = h; });
       return h;
     },
+    notifications: () => { try { return fs.readFileSync(path.join(dir, 'notifications.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse); } catch { return []; } },
+    // The environment every script run gets; `extra` is added last.
+    env: (extra = {}) => ({
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR || '/tmp',
+      CLAUDE_CONFIG_DIR: config, CODEX_HOME: path.join(dir, 'codex-home'), GH_TOKEN: TOKEN,
+      GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: `url.file://${path.join(dir, 'remote')}/.insteadOf`, GIT_CONFIG_VALUE_0: 'https://github.com/',
+      GIT_CONFIG_KEY_1: 'protocol.file.allow', GIT_CONFIG_VALUE_1: 'always', ...extra,
+    }),
     run(args, env = {}) {
-      const r = spawnSync(process.execPath, [SCRIPT, ...args], {
-        encoding: 'utf8', timeout: 120000,
-        env: {
-          PATH: `${bin}${path.delimiter}${process.env.PATH}`, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR || '/tmp',
-          CLAUDE_CONFIG_DIR: config, CODEX_HOME: path.join(dir, 'codex-home'), GH_TOKEN: TOKEN,
-          GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: `url.file://${path.join(dir, 'remote')}/.insteadOf`, GIT_CONFIG_VALUE_0: 'https://github.com/',
-          GIT_CONFIG_KEY_1: 'protocol.file.allow', GIT_CONFIG_VALUE_1: 'always', ...env,
-        },
-      });
+      const r = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', timeout: 120000, env: self.env(env) });
       const out = r.stdout.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
       return { status: r.status, out, stdout: r.stdout, stderr: r.stderr };
     },

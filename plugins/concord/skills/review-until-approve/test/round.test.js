@@ -296,7 +296,10 @@ test('criterion 7: an agent that cannot start, or whose hook did not run, posts 
   assert.equal(posts(c).length, 0);
   assert.deepEqual(leftovers(c), { modes: [], prs: [], rounds: [] });
   // Neither counts against the daily cap.
-  assert.ok(!fs.existsSync(path.join(c.config, 'concord', 'review-until-approve', 'notices')));
+  for (const x of [w, c]) {
+    const dir = path.join(x.config, 'concord', 'review-until-approve', 'notices');
+    for (const f of fs.existsSync(dir) ? fs.readdirSync(dir) : []) assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')).failed, undefined, f);
+  }
 });
 
 test('criterion 8: after a published round the mode files, the round directory, and the output directories are gone', () => {

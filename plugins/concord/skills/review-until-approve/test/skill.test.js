@@ -29,9 +29,14 @@ test('the session never reads the pull request or the round directory and relays
   for (const a of ['asked', 'unreadable', 'submodule', 'agent-cannot-start', 'hook-did-not-run', 'cap', 'account', 'overflow']) assert.match(skill, new RegExp(`\`${a}\``), a);
 });
 
-test('there is no waiting: the user invokes the skill again for the next round', () => {
-  assert.match(skill, /There is no waiting yet/);
-  assert.match(skill, /invoke it again after the author pushes or replies/);
+test('every invocation puts the pull request on the watch list before its round, and the user\'s stop is watch remove', () => {
+  assert.match(skill, /On every invocation, first run `watch add <owner\/repo> <n> --harness <claude\|codex>`, outside any sandbox/);
+  assert.match(skill, /then `round <owner\/repo> <n>/);
+  assert.match(skill, /`watch status --harness <claude\|codex>`/);
+  assert.match(skill, /`watch remove <owner\/repo> <n> --harness <claude\|codex>`: it prints `unwatched`, removes the entry and its pending lines, and posts nothing/);
+  for (const e of ['watching', 'watcher', 'notice', 'unwatched']) assert.match(skill, new RegExp(`\`${e}\``), e);
+  assert.match(skill, /A question line stays pending until it is answered/);
+  assert.doesNotMatch(skill, /There is no waiting yet|invoke it again after the author pushes/);
 });
 
 test('only the user decides, in their own words, and the account is never chosen by the session', () => {
