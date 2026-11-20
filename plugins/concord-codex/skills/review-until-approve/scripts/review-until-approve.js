@@ -424,8 +424,8 @@ function watched(ctx) {
 }
 
 // What a round or decision printed, under the pull request's lock, into the notice record and the notice list.
-// From the user's session, the questions it printed are listed (the session relays them too, so nothing is notified),
-// and lines its answers settled go; the invocation also lifts the hold at the daily cap. From the watcher, its lines are
+// From the user's session, on a watched pull request, the questions it printed are listed (the session relays them
+// too, so nothing is notified), and lines its answers settled go; the invocation also lifts the watcher's holds. From the watcher, its lines are
 // listed and notified, and the watcher holds the pull request at the view the round read when it failed or stopped on
 // a question it cannot answer itself; an invocation by the user does not read that hold.
 function recordRun(ctx, fromWatcher) {
@@ -436,9 +436,11 @@ function recordRun(ctx, fromWatcher) {
   const rec = readRecord(ctx.data, ctx.id);
   const asked = PRINTED.filter((l) => l.event === 'question').map((q) => questionText(pr, q, ctx.view.head));
   if (!fromWatcher) {
+    // The user's invocation retries what the watcher held, so it lifts both holds.
     delete rec.capHeld;
+    delete rec.held;
     // A run that stopped before printing what the state asks settles only the questions an invocation answers.
-    if (!PRINTED.some((l) => l.event === 'error') && !process.exitCode) reconcile(base, rec, pr, asked, ctx.askedAll ? ASKS : [...HOLD, 'overflow']);
+    if (!PRINTED.some((l) => l.event === 'error') && !process.exitCode && watched(ctx)) reconcile(base, rec, pr, asked, ctx.askedAll ? ASKS : [...HOLD, 'overflow']);
   } else {
     let notable = 0;
     for (const t of PRINTED.map((l) => noticeText(pr, l)).filter(Boolean)) {
@@ -1287,7 +1289,7 @@ async function main(argv) {
     try { await roundVerb(ctx, opts); } catch (e) {
       log('crash', e && e.stack);
       if (ctx.work) countFailed(ctx.data, ctx.id);
-      print({ event: 'error', reason: 'internal' });
+      print({ event: 'error', reason: e instanceof GhError ? 'github' : 'internal' });
       process.exitCode = 1;
     }
     recordRun(ctx, ctx.fromWatcher);

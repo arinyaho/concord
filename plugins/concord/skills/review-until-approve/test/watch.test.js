@@ -363,7 +363,7 @@ test('review finding: a watcher round that throws is listed and held, not restar
   entry(w);
   for (let i = 0; i < 3; i++) { settle(w); assert.ok(until(() => w.idle())); }
   assert.equal(w.calls().filter((c) => /compare/.test(c.a.join(' '))).length, 1);
-  assert.deepEqual(w.lines(), ['o/r#5 round failed: internal']);
+  assert.deepEqual(w.lines(), ['o/r#5 round failed: github']);
   assert.equal(w.notifications().length, 1);
 });
 
@@ -425,4 +425,20 @@ test('review finding: watch add refuses the account\'s own pull request and one 
     assert.equal(w.check().status, 0, bad);
     assert.ok(runtime.readJson(path.join(w.data, 'notices', 'o__r__5__rev.json'), null).view, bad);
   }
+});
+
+test('recheck finding: after the user retries a held round, a pull request made ready is still approved', () => {
+  const w = watched();
+  w.agents({ reviewer: [null], verifier: [] });
+  w.update((v) => { v.pr.isDraft = true; v.reviews.push(stateReview(w, {})); });
+  w.push({ 'a.js': 'one\ntwo\nbad line\nthree\nfour\n' });
+  entry(w);
+  settle(w);
+  assert.ok(until(() => w.lines().includes('o/r#5 round failed: reviewer-output') && w.idle()));
+  w.agents({ reviewer: [{ findings: [] }], verifier: [{ findings: [], verdicts: [] }] });
+  const r = w.sh(['round', 'o/r', '5', '--harness', 'claude']);
+  assert.deepEqual(r.out[0].why, ['draft']);
+  w.update((v) => { v.pr.isDraft = false; });
+  settle(w);
+  assert.ok(until(() => reviews(w).at(-1).state === 'APPROVED' && w.idle()), 'approved');
 });
