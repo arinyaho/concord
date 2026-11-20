@@ -30,34 +30,44 @@ function fencePath(p) {
   return fence(p);
 }
 
-// The lines outside fenced blocks: a fence opens with a line of three or more backticks and closes with a line of at
-// least as many.
-function outsideFences(text) {
+// The lines outside and inside fenced blocks: a fence opens with a line of three or more backticks and closes with a
+// line of at least as many.
+function splitFences(text) {
   const out = [];
+  const inside = [];
   let open = 0;
   for (const line of text.split(LINES)) {
     const run = /^ {0,3}(`{3,})(.*)$/.exec(line);
     if (open) {
       if (run && run[1].length >= open && !run[2].trim()) open = 0;
+      else inside.push(line);
     } else if (run && !run[2].includes('`')) open = run[1].length;
     else out.push(line);
   }
-  return out;
+  return { out, inside };
 }
 
+const firstWord = (line) => line.split(/\s/)[0].toLowerCase().replace(/[.,:;!?]+$/, '');
+
 // The reason the composed text must not be posted, or null. A line is checked after its leading quote markers and
-// spaces, so escaped prose is held to the same rule as the script's own lines. `markers` are the prefixes of the
-// script's own HTML comments (`<!-- review-until-approve:`); `secrets` are the GitHub token and the harness credential.
+// spaces, so escaped prose is held to the same rule as the script's own lines. A line inside a fence is shown literally,
+// but a bot that reads the raw text may still take a slash command or a bot command word there, so those are refused
+// too. `markers` are the prefixes of the script's own HTML comments (`<!-- review-until-approve:`); `secrets` are the
+// GitHub token and the harness credential.
 function refusal(text, { markers = [], secrets = [] } = {}) {
   if (secrets.some((s) => typeof s === 'string' && s.length >= 8 && text.includes(s))) return 'credential';
-  for (const line of outsideFences(text)) {
+  const { out, inside } = splitFences(text);
+  for (const line of out) {
     for (const m of line.matchAll(/<!--/g)) {
       if (!markers.some((p) => line.startsWith(p, m.index))) return 'html comment';
     }
     const bare = line.replace(/^[\s>]*/, '');
     if (bare.startsWith('/') || bare.startsWith('@')) return 'command line';
-    const word = bare.split(/\s/)[0].toLowerCase().replace(/[.,:;!?]+$/, '');
-    if (BOT_WORDS.includes(word)) return 'bot command';
+    if (BOT_WORDS.includes(firstWord(bare))) return 'bot command';
+  }
+  for (const line of inside) {
+    if (/^\s*\/[A-Za-z-]+(\s|$)/.test(line)) return 'command line';
+    if (BOT_WORDS.includes(firstWord(line.trimStart()))) return 'bot command';
   }
   return null;
 }

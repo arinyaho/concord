@@ -15,9 +15,8 @@ const section = (text, heading) => text.split(`\n${heading}\n`)[1]?.split(/\n## 
 const WORKFLOWS = ['review-and-fix', 'ticket-to-pr', 'initiative-to-prs', 'coordinate-sessions'];
 
 test('nothing a user invokes calls the review CLI, a ledger, a budget, or a removed workflow', () => {
-  // review-until-approve keeps its own implementation and is excluded.
   const invoked = execFileSync('git', ['ls-files', 'plugins/*/skills/**/*.md', 'plugins/*/commands/*.md', 'plugins/*/agents/*.md', 'README.md', 'docs/install.md'], { cwd: REPO, encoding: 'utf8' })
-    .trim().split('\n').filter((f) => fs.existsSync(path.join(REPO, f)) && !f.includes('/review-until-approve/') && f !== 'plugins/concord/agents/pr-reviewer.md');
+    .trim().split('\n').filter((f) => fs.existsSync(path.join(REPO, f)));
   assert.ok(invoked.length > 20, String(invoked.length));
   for (const file of invoked) {
     assert.doesNotMatch(read(file), /review-cli|record-delivery|STATE_CLI|--initiative-|review-until-lgtm|review-until-green|create_session|send_message|round-start/, file);
@@ -27,7 +26,7 @@ test('nothing a user invokes calls the review CLI, a ledger, a budget, or a remo
       assert.doesNotMatch(read(`plugins/concord/skills/${name}/${file}`), /\bledgers?\b|\bbudgets?\b|run key|reviewerUnavailable|delivery disposition|\blite\b/i, `${name}/${file}`);
     }
   }
-  for (const gone of ['plugins/concord/commands/review-and-fix.md', 'plugins/concord/commands/review-until-green.md', 'plugins/concord/agents/project-manager.md', 'plugins/concord/skills/review-until-lgtm']) {
+  for (const gone of ['plugins/concord/commands/review-and-fix.md', 'plugins/concord/commands/review-until-green.md', 'plugins/concord/agents/project-manager.md', 'plugins/concord/skills/review-until-lgtm', 'plugins/concord/agents/pr-reviewer.md', 'docs/design/review-artifact-contract.md', 'plugins/concord/skills/review-until-approve/scripts/approve.js']) {
     assert.ok(!fs.existsSync(path.join(REPO, gone)), gone);
   }
 });
@@ -144,7 +143,7 @@ test('the workflow skills are a fraction of the size they replace', () => {
 
 test('no workflow skill or agent text points at docs/design, which the installed plugin does not ship', () => {
   const files = execFileSync('git', ['ls-files', 'plugins/concord/skills/**/*.md', 'plugins/concord/agents/*.md'], { cwd: REPO, encoding: 'utf8' }).trim().split('\n')
-    .filter((f) => fs.existsSync(path.join(REPO, f)) && !f.includes('/review-until-approve/'));
+    .filter((f) => fs.existsSync(path.join(REPO, f)));
   for (const file of files) assert.doesNotMatch(read(file), /docs\/design/, file);
 });
 

@@ -28,7 +28,7 @@ test('a character reference cannot spell a mention, and a lone CR still starts a
   assert.equal(refusal('fine\rlgtm'), 'bot command');
   // A fence closed by a lone CR is a fence to GitHub, and so to the scan.
   assert.equal(refusal('```\r/approve\r```\r/merge'), 'command line');
-  assert.equal(refusal('```\r/approve\r```'), null);
+  assert.equal(refusal('```\r@x <!-- y -->\r```'), null);
 });
 
 test('a span holding a backtick run gets a longer fence, so it closes only at its own end', () => {
@@ -70,9 +70,25 @@ test('outside fences, a foreign HTML comment and a line starting with /, @ or a 
   }
   assert.deepEqual(BOT_WORDS, ['bors', 'atlantis', 'r+', 'retest', 'ok-to-test', 'lgtm']);
   ok('the lgtm label and a /path in prose');
-  ok('```\n/approve\n@bot\n<!-- x -->\nlgtm\n```');
+  ok('```\n@bot\n<!-- x -->\n/usr/bin/env node\nconst lgtm = 1;\n```');
   // A fence opened inside a quote does not hide lines from the scan.
   no('> ```\n/approve\n> ```', 'command line');
+});
+
+test('inside a fence, a slash command line or a line starting with a bot command word is refused', () => {
+  const no = (t, why) => assert.equal(refusal(t, { markers: MARKERS }), why, JSON.stringify(t));
+  no('```\n/approve\n```', 'command line');
+  no('````\n  /merge now\n````', 'command line');
+  no('```\r/re-run\r```', 'command line');
+  for (const word of BOT_WORDS) {
+    no(`\`\`\`\n${word}\n\`\`\``, 'bot command');
+    no(`\`\`\`\n  ${word.toUpperCase()}: go\n\`\`\``, 'bot command');
+  }
+  // A path, a slash inside a line, and a word that only starts like a command word are not commands.
+  for (const t of ['```\n/usr/local/bin\n```', '```\n/src/a.js\n```', '```\na /approve b\n```', '```\nlgtmx = 1\n```', '```\n//approve\n```']) {
+    assert.equal(refusal(t, { markers: MARKERS }), null, t);
+  }
+  assert.equal(refusal(fencePath('/approve'), { markers: MARKERS }), 'command line');
 });
 
 test('the GitHub token or the harness credential anywhere, inside a fence included, is refused', () => {

@@ -48,18 +48,18 @@ test('codex engine has exactly the expected file set (no stale/missing)', async 
   assert.deepStrictEqual([...actual].sort(), [...expected].sort());
 });
 
-test('codex review-until-approve is the shared skill without its tests and carries its own runner', () => {
+test('codex review-until-approve is the shared skill without its tests and carries its own script', () => {
   const src = path.join(REPO, 'plugins/concord/skills/review-until-approve');
   const bundled = path.join(REPO, 'plugins/concord-codex/skills/review-until-approve');
   const list = (root) => fs.readdirSync(root, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => path.relative(root, path.join(e.parentPath, e.name))).filter((f) => !f.startsWith('test' + path.sep)).sort();
   assert.deepStrictEqual(list(bundled), list(src));
   for (const f of list(src)) assert.ok(fs.readFileSync(path.join(src, f)).equals(fs.readFileSync(path.join(bundled, f))), `${f} drifted — re-run node plugins/concord-codex/bin/bundle.mjs`);
   assert.ok(!fs.existsSync(path.join(bundled, 'test')));
-  // The round's runner travels with the skill: nothing under its scripts reaches outside the skill directory except
-  // the shared runtime, which the bundle puts at the same relative path.
-  assert.strictEqual(typeof require(path.join(bundled, 'scripts/runner/review.js')).runReview, 'function');
+  // The script travels with the skill: nothing under its scripts reaches outside the skill directory except the shared
+  // runtime and explain-pr's script, which the bundle puts at the same relative paths.
+  assert.strictEqual(typeof require(path.join(bundled, 'scripts/review-until-approve.js')).compose, 'function');
   for (const f of list(bundled).filter((name) => name.endsWith('.js'))) {
-    const text = fs.readFileSync(path.join(bundled, f), 'utf8').replace(/require\('(\.\.\/)+runtime\/[\w-]+'\)/g, '');
+    const text = fs.readFileSync(path.join(bundled, f), 'utf8').replace(/require\('(\.\.\/)+runtime\/[\w-]+'\)/g, '').replace("require('../../explain-pr/scripts/explain-pr')", '');
     assert.doesNotMatch(text, /require\([^)]*(\.\.\/\.\.|engine|core)[^)]*\)/, f);
   }
 });
