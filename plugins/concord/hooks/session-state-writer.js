@@ -21,7 +21,7 @@ function inReadOnlyMode(sid) {
 }
 
 // A confined agent or headless session a script started: its mode file is of a confined kind, or its working directory
-// is a confined one. Nothing of it is harvested. A mode file that cannot be read counts as confined.
+// is a confined one. Nothing of it is harvested.
 function confined(sid) {
   const dir = dataDir('explain-pr', 'claude');
   if (confinedCwd(process.cwd(), { sessionRoot: sessionRoot('claude'), prsRoot: path.join(dir, 'prs') })) return true;
@@ -29,7 +29,7 @@ function confined(sid) {
     const mode = readMode(dir, sid);
     return mode !== null && mode.kind !== 'read';
   } catch {
-    return true;
+    return false; // an unreadable mode file is treated as explain-pr's reading mode, which harvests nothing either
   }
 }
 

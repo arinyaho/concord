@@ -48,14 +48,24 @@ const gqlPr = (p) => ({ number: p.number, state: p.state, isDraft: p.isDraft, ti
   changedFiles: p.changedFiles ?? (p.files || []).length, reviewDecision: p.reviewDecision, mergeCommit: p.mergeCommit ? { oid: p.mergeCommit } : null });
 if (a[0] === 'api' && url === 'user') out({ login: w.self || 'octocat' });
 else if (a[0] === 'api' && url === 'rate_limit') out({ resources: { core: { remaining: 5000, reset: 1767225600 }, graphql: { remaining: 5000, reset: 1767225600 }, ...w.rateLimit } });
-else if (a[0] === 'api' && url === 'graphql') {
+else if (a[0] === 'api' && url === 'graphql' && /resolveReviewThread/.test(field('query'))) {
+  for (const r of Object.values(w.repos)) for (const p of r.prs) for (const t of p.threads) if ('T' + t.root === field('id')) t.resolved = true;
+  save();
+  out({ data: { resolveReviewThread: { thread: { isResolved: true } } } });
+} else if (a[0] === 'api' && url === 'graphql') {
   const q = field('query'), name = field('owner') + '/' + field('name'), repo = repoAt(name);
   if (!repo) fail('Could not resolve to a Repository');
   const p = field('number') && prOf(repo, field('number'));
   const wrap = (pr) => ({ data: { repository: { defaultBranchRef: { name: repo.defaultBranch || 'main' }, ...pr } } });
   if (/pullRequests\\(/.test(q)) gqlPages(repo.prs.filter((x) => x.state === 'OPEN'), (nodes, pageInfo) => wrap({ pullRequests: { pageInfo, nodes: nodes.map(gqlPr) } }));
   else if (/reviews\\(first:100,after/.test(q)) gqlPages(p.reviews, (nodes, pageInfo) => wrap({ pullRequest: { reviews: { pageInfo, nodes: nodes.map((r) => ({ fullDatabaseId: String(r.id), lastEditedAt: r.lastEditedAt || null })) } } }));
-  else if (/reviewThreads/.test(q)) gqlPages(p.threads, (nodes, pageInfo) => wrap({ pullRequest: { reviewThreads: { pageInfo, nodes: nodes.map((t) => ({ isResolved: Boolean(t.resolved) })) } } }));
+  else if (/reviewThreads/.test(q)) gqlPages(p.threads, (nodes, pageInfo) => wrap({ pullRequest: { reviewThreads: { pageInfo, nodes: nodes.map((t) => {
+    const first = p.comments.find((c) => c.id === t.root);
+    return { id: 'T' + t.root, isResolved: Boolean(t.resolved), comments: { nodes: first ? [{ databaseId: first.id, author: { login: first.user.login.replace(/\\[bot\\]$/, ''), __typename: first.user.type } }] : [] } };
+  }) } } }));
+  else if (/closingIssuesReferences/.test(q)) out(wrap({ pullRequest: { closingIssuesReferences: { nodes: (p.closing || []).map((i) => ({ number: i.number, state: i.state || 'CLOSED', url: 'https://github.com/' + i.repo + '/issues/' + i.number, body: i.body || '',
+    author: { login: i.author, __typename: /\\[bot\\]$/.test(i.author) ? 'Bot' : 'User' }, repository: { nameWithOwner: i.repo, isPrivate: Boolean(i.isPrivate) },
+    comments: { nodes: (i.comments || []).map((c) => ({ databaseId: c.id, url: 'https://github.com/' + i.repo + '/issues/' + i.number + '#issuecomment-' + c.id, body: c.body, author: { login: c.author, __typename: /\\[bot\\]$/.test(c.author) ? 'Bot' : 'User' } })) } })) } } }));
   else if (/statusCheckRollup/.test(q)) gqlPages(p.checks, (nodes, pageInfo) => wrap({ pullRequest: { commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo, nodes: nodes.map((c) => c.context
     ? { __typename: 'StatusContext', context: c.context, state: c.state, isRequired: !!c.required, createdAt: c.at || '2026-01-01T00:00:00Z' }
     : { __typename: 'CheckRun', name: c.name, status: c.status || 'COMPLETED', conclusion: c.conclusion ?? 'SUCCESS', completedAt: c.at || '2026-01-01T00:00:00Z', isRequired: !!c.required, checkSuite: { workflowRun: c.runId ? { databaseId: c.runId } : null } }) } } } }] } } }));
@@ -128,9 +138,65 @@ else if (a[0] === 'api' && url === 'graphql') {
       commit: { verification: { verified: Boolean(c.verified) } }, parents: (c.parents || []).map((sha) => ({ sha })) });
   }
   else if ((m = /^compare\\/(.+)\\.\\.\\.(.+)$/.exec(rest))) out({ status: (repo.compare || {})[m[1] + '...' + m[2]] || 'ahead' });
+  else if ((m = /^actions\\/runs\\/(\\d+)\\/jobs/.exec(rest))) restPages([{ jobs: (repo.jobs || {})[m[1]] || [] }]);
+  else if ((m = /^actions\\/jobs\\/(\\d+)\\/logs$/.exec(rest))) process.stdout.write((repo.logs || {})[m[1]] || '');
   else if ((m = /^actions\\/runs\\/(\\d+)$/.exec(rest))) out((repo.runs || {})[m[1]] || { status: 'completed', conclusion: 'failure', run_attempt: 1 });
   else fail('HTTP 404: Not Found (' + url + ')');
 } else fail('unexpected gh call: ' + a.join(' '));
+`;
+
+// A fake `claude` and `codex` for headless sessions. Its behavior comes from agent.json in the world directory, since
+// the launcher passes it only allowlisted variables. Under Claude Code every tool call goes through the real read-only
+// hook the launcher configured; it records what the hook decided for a shell call and for a write outside the session's
+// directories. It applies `edits` (paths relative to the worktree), may move the pull request's head in the world, and
+// writes `result` (or `resultRaw`) to the result file. Calls go to agent-calls.jsonl.
+const FAKE_AGENT = (dir) => `#!${process.execPath}
+const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+const { spawnSync } = require('node:child_process');
+const dir = ${JSON.stringify(dir)};
+const b = JSON.parse(fs.readFileSync(dir + '/agent.json', 'utf8'));
+const args = process.argv.slice(2);
+const log = (x) => fs.appendFileSync(dir + '/agent-calls.jsonl', JSON.stringify(x) + '\\n');
+if (args[0] === 'sandbox') {
+  const cmd = args.slice(args.indexOf('--') + 1);
+  log({ sandbox: cmd });
+  if (cmd.includes('curl')) process.exit(b.network === 'open' ? 0 : 6);
+  if (cmd[cmd.length - 1] === os.homedir()) process.exit(b.home === 'open' ? 0 : 1);
+  process.exit(0);
+}
+let worktree, session, hook;
+if (args[0] === 'exec') {
+  worktree = args[args.indexOf('-C') + 1];
+  session = path.join(path.dirname(worktree), 'session');
+  hook = () => 'allow';
+  log({ harness: 'codex', cwd: process.cwd(), env: Object.keys(process.env).sort() });
+} else {
+  const sid = args[args.indexOf('--session-id') + 1];
+  const settings = JSON.parse(args[args.indexOf('--settings') + 1]);
+  const mode = JSON.parse(fs.readFileSync(path.join(process.env.EXPLAIN_PR_DIR, 'modes', sid), 'utf8'));
+  worktree = mode.worktree; session = mode.session;
+  hook = (tool_name, tool_input) => {
+    const r = spawnSync(settings.hooks.PreToolUse[0].hooks[0].command, { shell: true, encoding: 'utf8', input: JSON.stringify({ session_id: sid, tool_name, tool_input }) });
+    return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput.permissionDecision : 'none';
+  };
+  hook('Read', { file_path: mode.canary });
+  log({ harness: 'claude', cwd: process.cwd(), tools: args[args.indexOf('--tools') + 1], env: Object.keys(process.env).sort(),
+    bash: hook('Bash', { command: 'git push' }), outside: hook('Write', { file_path: path.join(path.dirname(worktree), 'git', 'config'), content: '' }) });
+}
+const input = JSON.parse(fs.readFileSync(path.join(session, 'input.json'), 'utf8'));
+log({ input, gitInWorktree: fs.existsSync(path.join(worktree, '.git')), files: fs.readdirSync(worktree).sort(), logs: (input.logs || []).map((l) => fs.readFileSync(path.join(session, l.file), 'utf8')) });
+if (b.sleep) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, b.sleep);
+if (b.moveHead) {
+  const wf = dir + '/world.json', w = JSON.parse(fs.readFileSync(wf, 'utf8'));
+  for (const r of Object.values(w.repos)) for (const p of r.prs) if (p.number === input.number) p.headRefOid = b.moveHead;
+  fs.writeFileSync(wf, JSON.stringify(w));
+}
+for (const [f, text] of Object.entries(b.edits || {})) {
+  const file = path.join(worktree, f);
+  if (hook('Write', { file_path: file, content: text }) === 'allow') fs.writeFileSync(file, text);
+}
+const out = path.join(session, 'result.json');
+if (hook('Write', { file_path: out, content: '' }) === 'allow' && (b.result || b.resultRaw)) fs.writeFileSync(out, b.resultRaw || JSON.stringify(b.result));
 `;
 
 const T = (minute) => new Date(Date.UTC(2026, 0, 1, 0, minute)).toISOString();
@@ -161,11 +227,22 @@ const TODAY = new Date().toISOString().slice(0, 10);
 const isTarget = (a, i, args) => /^[\w.-]+\/[\w.-]+(#\d+)?$/.test(a) && !(/^--/.test(args[i - 1] || '') && !['--confirm', '--no-merge'].includes(args[i - 1]));
 const fakeNotifier = (dir) => `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(path.join(dir, 'notifications.jsonl'))}, JSON.stringify(process.argv.slice(2)) + '\\n');\n`;
 
+// A `git` that records each call's arguments in git-calls.jsonl and runs the real one.
+const REAL_GIT = execFileSync(process.platform === 'win32' ? 'where' : 'which', ['git'], { encoding: 'utf8' }).split(/\r?\n/)[0].trim();
+const LOGGING_GIT = (dir) => `#!${process.execPath}
+require('node:fs').appendFileSync(${JSON.stringify(path.join(dir, 'git-calls.jsonl'))}, JSON.stringify(process.argv.slice(2)) + '\\n');
+const r = require('node:child_process').spawnSync(${JSON.stringify(REAL_GIT)}, process.argv.slice(2), { stdio: 'inherit' });
+process.exit(r.status === null ? 1 : r.status);
+`;
+
 function world(repos, extra = {}) {
   const dir = tempDir('ptm-world-');
   fs.mkdirSync(path.join(dir, 'bin'));
   fs.writeFileSync(path.join(dir, 'bin', 'gh'), FAKE_GH(dir), { mode: 0o755 });
   for (const n of ['osascript', 'notify-send']) fs.writeFileSync(path.join(dir, 'bin', n), fakeNotifier(dir), { mode: 0o755 });
+  // No test starts the real `claude` or `codex`: by default the fake agent writes no result.
+  fs.writeFileSync(path.join(dir, 'agent.json'), '{}');
+  for (const n of ['claude', 'codex']) fs.writeFileSync(path.join(dir, 'bin', n), FAKE_AGENT(dir), { mode: 0o755 });
   const file = path.join(dir, 'world.json');
   // The accounts with write access in every fixture; a test names any other account's permission itself.
   const permissions = { octocat: 'admin', monalisa: 'write', 'octo-dev': 'write', ...extra.permissions };
@@ -175,8 +252,9 @@ function world(repos, extra = {}) {
   const config = path.join(dir, 'config');
   const base = path.join(config, 'concord');
   const skillDir = path.join(base, 'pr-to-merge');
-  const env = { ...process.env, HOME: path.join(dir, 'home'), CLAUDE_CONFIG_DIR: config, PATH: `${path.join(dir, 'bin')}${path.delimiter}${process.env.PATH}` };
-  delete env.CODEX_HOME;
+  const env = { ...process.env, HOME: path.join(dir, 'home'), CLAUDE_CONFIG_DIR: config, CODEX_HOME: path.join(dir, 'codex'), PATH: `${path.join(dir, 'bin')}${path.delimiter}${process.env.PATH}`,
+    GIT_AUTHOR_NAME: 'octocat', GIT_AUTHOR_EMAIL: 'octocat@example.com', GIT_COMMITTER_NAME: 'octocat', GIT_COMMITTER_EMAIL: 'octocat@example.com' };
+  for (const k of ['GH_TOKEN', 'GITHUB_TOKEN', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'EXPLAIN_PR_DIR']) delete env[k];
   const read = (name) => (fs.existsSync(path.join(dir, name)) ? fs.readFileSync(path.join(dir, name), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
   // Runs the script with `args` and this world's fakes.
   const script = (args, { timeout = 30000, input } = {}) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', timeout, env, input });
@@ -189,19 +267,41 @@ function world(repos, extra = {}) {
     // Writes the watch entries that `watch add` would write for `args` (one per repository named, --self octocat,
     // authorized today) without starting a watcher, then runs one check. `lines` holds the lines the check recorded
     // other than `review` lines, which are in `reviews`.
-    run(args, { self = 'octocat', authorized = TODAY } = {}) {
+    // Headless sessions: `agent(behavior)` sets what the fake `claude` and `codex` do; `sessions()` reads each session's
+    // record with its status; `settle()` waits until every session has ended.
+    agent(behavior) { fs.writeFileSync(path.join(dir, 'agent.json'), JSON.stringify(behavior)); },
+    agentCalls: () => read('agent-calls.jsonl'),
+    logGit() { fs.writeFileSync(path.join(dir, 'bin', 'git'), LOGGING_GIT(dir), { mode: 0o755 }); },
+    gitCalls: () => read('git-calls.jsonl'),
+    sessions(harness = 'claude') {
+      const root = path.join(harness === 'claude' ? config : env.CODEX_HOME, 'concord', 'pr-to-merge', 'sessions');
+      const ids = fs.existsSync(root) ? fs.readdirSync(root).sort() : [];
+      const json = (f) => (fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : null);
+      return ids.map((id) => ({ ...json(path.join(root, id, 'record.json')), dir: path.join(root, id), status: json(path.join(root, id, 'status.json')) }));
+    },
+    settle(harness = 'claude', ms = 30000) {
+      for (const end = Date.now() + ms; this.sessions(harness).some((x) => !x.status);) {
+        if (Date.now() > end) throw new Error(`a session did not end: ${JSON.stringify(this.sessions(harness))}`);
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+      }
+      return this.sessions(harness);
+    },
+    // The notice lines a session's runner recorded (the check prints its own).
+    notices: () => (fs.existsSync(path.join(base, 'notices')) ? fs.readdirSync(path.join(base, 'notices')).sort().map((n) => JSON.parse(fs.readFileSync(path.join(base, 'notices', n), 'utf8')).line) : []),
+    run(args, { self = 'octocat', authorized = TODAY, harness = 'claude' } = {}) {
       const options = args.filter((a, i) => !isTarget(a, i, args));
       const targets = args.filter(isTarget);
       const repos = [...new Set(targets.map((a) => a.split('#')[0]))];
-      const list = { entries: {}, ...(fs.existsSync(path.join(skillDir, 'watch.json')) ? JSON.parse(fs.readFileSync(path.join(skillDir, 'watch.json'), 'utf8')) : {}) };
+      const dirOf = harness === 'claude' ? skillDir : path.join(env.CODEX_HOME, 'concord', 'pr-to-merge');
+      const list = { entries: {}, ...(fs.existsSync(path.join(dirOf, 'watch.json')) ? JSON.parse(fs.readFileSync(path.join(dirOf, 'watch.json'), 'utf8')) : {}) };
       for (const repo of repos) {
-        const entry = PR_TO_MERGE.entryFromArgs([...targets.filter((a) => a.split('#')[0] === repo), ...options, '--harness', 'claude', '--self', self, '--authorized', authorized]);
+        const entry = PR_TO_MERGE.entryFromArgs([...targets.filter((a) => a.split('#')[0] === repo), ...options, '--harness', harness, '--self', self, '--authorized', authorized]);
         PR_TO_MERGE.addEntry(list, entry);
       }
-      fs.mkdirSync(skillDir, { recursive: true });
-      fs.writeFileSync(path.join(skillDir, 'watch.json'), JSON.stringify(list));
+      fs.mkdirSync(dirOf, { recursive: true });
+      fs.writeFileSync(path.join(dirOf, 'watch.json'), JSON.stringify(list));
       const before = calls().length;
-      const r = script(['check', '--harness', 'claude']);
+      const r = script(['check', '--harness', harness]);
       const made = calls().slice(before);
       const all = r.stdout.split('\n').filter(Boolean);
       return {

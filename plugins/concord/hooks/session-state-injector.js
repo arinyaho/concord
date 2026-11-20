@@ -23,7 +23,7 @@ function confined(sid) {
     const mode = readMode(dir, sid);
     return mode !== null && mode.kind !== 'read';
   } catch {
-    return true;
+    return false; // an unreadable mode file is treated as explain-pr's reading mode, which harvests nothing either
   }
 }
 

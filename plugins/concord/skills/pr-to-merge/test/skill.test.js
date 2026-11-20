@@ -10,7 +10,7 @@ const table = skill.split('\n').filter((l) => l.startsWith('|')).join('\n');
 
 // Every kind of line a check records.
 const KINDS = ['merged', 'queued', 'ready', 'requested', 'no reviewer', 'stale approval', 'confirm', 'review', 'triage', 'approved', 'rerun', 'synced',
-  'stack', 'post-merge failed', 'merge failed', 'sync failed', 'request failed', 'closed', 'account', 'unwatched', 'rate limited'];
+  'stack', 'post-merge failed', 'merge failed', 'sync failed', 'request failed', 'closed', 'account', 'unwatched', 'rate limited', 'session', 'ticket', 'post failed'];
 
 test('SKILL.md names the skill, starts the watcher with watch add, and relays with watch status', () => {
   assert.match(skill, /^---\nname: pr-to-merge\ndescription: >-\n/);

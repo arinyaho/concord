@@ -145,7 +145,7 @@ test('a confirmation of another head releases nothing', () => {
 test('a conflict is reported and a failed required check run again on the user\'s own pull request before any approval', () => {
   const p = pr(1, { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY', checks: [{ name: 'build', required: true, conclusion: 'FAILURE', runId: 7 }] });
   const r = world(repo([p], { runs: { 7: { status: 'completed', conclusion: 'failure', run_attempt: 1 } } })).run(['acme/app']);
-  assert.deepEqual(r.lines, ['triage acme/app#1 head head1: conflict', 'rerun acme/app#1 head head1: run 7']);
+  assert.deepEqual(r.lines, ['rerun acme/app#1 head head1: run 7', 'triage acme/app#1 head head1: conflict']);
   assert.deepEqual(r.writes, [['api', '-X', 'POST', 'repos/acme/app/actions/runs/7/rerun-failed-jobs']]);
 });
 
