@@ -516,6 +516,8 @@ function writeStore(ctx, store, notes, was) {
 // looks for the notes gist by its description.
 function loadNotes(ctx, stateHash) {
   const store = notesStore(ctx.data);
+  const raw = () => { try { return fs.readFileSync(cacheFile(ctx), 'utf8'); } catch { return null; } };
+  const before = raw();
   const cache = readCache(ctx);
   if (cache && !cache.stored) return store ? { ask: 'notes-unusable', problem: 'unsaved' } : { ask: 'notes-store' };
   if (!store && !stateHash && !cache) return { hash: '', text: '', duplicates: 0 };
@@ -525,13 +527,17 @@ function loadNotes(ctx, stateHash) {
     if (store) return { ask: 'notes-unusable', problem: e.problem };
     got = { notes: null, refused: true };
   }
-  // Notes `notes` saved while the store was read stay as they are, and keep rounds waiting until stored.
-  if (readCache(ctx)?.stored === false) return store ? { ask: 'notes-unusable', problem: 'unsaved' } : { ask: 'notes-store' };
+  // Notes `notes` saved while the store was read stay as they are: unsaved ones keep rounds waiting, and stored ones
+  // are left for the next read, which sees them as changed.
+  const changed = raw() !== before;
+  if (changed && readCache(ctx)?.stored === false) return store ? { ask: 'notes-unusable', problem: 'unsaved' } : { ask: 'notes-store' };
   if (!got.notes) {
-    if (!got.refused) fs.rmSync(cacheFile(ctx), { force: true });
+    // A gist lookup this token may not make, on a machine that held notes, does not read as "no notes".
+    if (got.refused && cache) return { ask: 'notes-store' };
+    if (!changed) fs.rmSync(cacheFile(ctx), { force: true });
     return stateHash ? { ask: 'notes-store' } : { hash: '', text: '', duplicates: 0 };
   }
-  writeCache(ctx, { ...got.notes, stored: true });
+  if (!changed) writeCache(ctx, { ...got.notes, stored: true });
   return { hash: notesHash(got.notes), text: got.notes.text, duplicates: got.duplicates || 0 };
 }
 const notesQuestion = (l, link) => ({ event: 'question', ask: l.ask, ...(l.problem && { problem: l.problem }), ...(link && { link }) });
@@ -976,8 +982,12 @@ function reviewerOk(text) {
 
 // The verifier's list after the checks: { ok, list } or { ok: false }. A span must occur in its file at the head; a
 // verdict claiming the code settles something without a quoted span becomes `asked`.
-// The lines of the notes long enough to recognize, normalized: agent text that contains one is not posted.
-const noteLines = (notes) => String(notes || '').split(/\r\n|\r|\n/).map(norm).filter((l) => l.length >= 12);
+// The sentences of the notes, without list markers and normalized, that are long enough to recognize: three words or
+// more and at least 12 characters, so that a path or a name the notes mention is not one. Agent text that contains
+// one is not posted. Paraphrase and shorter sentences are not caught.
+const noteLines = (notes) => String(notes || '').split(/\r\n|\r|\n/).map((l) => l.replace(/^\s*(?:[-*+>]|\d+[.)])\s+/, ''))
+  .flatMap((l) => l.split(/(?<=[.!?;:])\s+/)).map(norm).map((l) => l.replace(/[.!?;:]+$/, ''))
+  .filter((l) => l.length >= 12 && l.split(' ').length >= 3);
 const norm = (t) => String(t).toLowerCase().replace(/\s+/g, ' ').trim();
 function checkList(text, { state, roundDir, secrets, notes = '' }) {
   let v;
@@ -1519,7 +1529,8 @@ async function main(argv) {
   trapSignals();
   const ctx = begin(repo, n, opts);
   if (!ctx) return;
-  // A failed GitHub read in state or notes is reported as `github`; no stack is logged, so nothing names the store.
+  // A failed GitHub read in state, notes, or decide is reported as `github`; no stack is logged, so nothing names the
+  // store.
   const guarded = (fn) => {
     try { return fn(); } catch (e) {
       log(verb, e instanceof GhError ? 'gh failed' : e && e.name);
@@ -1529,8 +1540,8 @@ async function main(argv) {
     }
   };
   if (verb === 'state') return guarded(() => stateVerb(ctx));
-  if (verb === 'notes') return withLock(ctx, () => guarded(() => notesVerb(ctx, pos, opts)));
-  if (verb === 'decide') return withLock(ctx, () => { decideVerb(ctx, pos, opts); recordRun(ctx, false); });
+  if (verb === 'notes') return guarded(() => notesVerb(ctx, pos, opts));
+  if (verb === 'decide') return withLock(ctx, () => { guarded(() => decideVerb(ctx, pos, opts)); recordRun(ctx, false); });
   return withLock(ctx, async () => {
     // A round that throws is recorded like a failed one, so that the watcher holds it and the user hears of it.
     try { await roundVerb(ctx, opts); } catch (e) {

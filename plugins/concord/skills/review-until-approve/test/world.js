@@ -23,7 +23,8 @@ const input = a.includes('--input') ? fs.readFileSync(0, 'utf8') : '';
 fs.appendFileSync(dir + '/calls.jsonl', JSON.stringify({ a, input }) + '\\n');
 const out = (v) => process.stdout.write(JSON.stringify(v) + '\\n');
 const fail = (msg) => { process.stderr.write(msg + '\\n'); process.exit(1); };
-const save = () => fs.writeFileSync(file, JSON.stringify(w));
+// Written to a temporary file and renamed, so that a test polling world.json never reads half a file.
+const save = () => { fs.writeFileSync(file + '.' + process.pid, JSON.stringify(w)); fs.renameSync(file + '.' + process.pid, file); };
 const field = (k) => { const i = a.findIndex((x, j) => ['-f', '-F'].includes(a[j - 1]) && x.startsWith(k + '=')); return i < 0 ? undefined : a[i].slice(k.length + 1); };
 const url = a.slice(1).find((x, i, arr) => !x.startsWith('-') && !['-X', '-f', '-F', '--input'].includes(arr[i - 1]));
 const method = a.includes('-X') ? a[a.indexOf('-X') + 1] : 'GET';
@@ -218,7 +219,7 @@ function world({ base = { 'a.js': 'one\ntwo\nthree\n' }, files = { 'a.js': 'one\
     pr: { number: 5, state: 'OPEN', isDraft: false, title: 'Add a line', body: 'Adds a line.', url: 'https://github.com/o/r/pull/5', headRefOid: head, baseRefOid: mergeBase, author: { login: author }, labels: { nodes: [] }, ...pr },
     ...rest,
   };
-  const save = (v) => fs.writeFileSync(path.join(dir, 'world.json'), JSON.stringify(v));
+  const save = (v) => { const tmp = path.join(dir, `world.json.${process.pid}`); fs.writeFileSync(tmp, JSON.stringify(v)); fs.renameSync(tmp, path.join(dir, 'world.json')); };
   save(w);
   const self = {
     dir, work, bare, mergeBase, head, config, bin,

@@ -99,6 +99,9 @@ test('2: the gist is secret with the fixed description; an empty cache finds it;
   lost.update((v) => { v.noGistScope = true; });
   assert.deepEqual(run(lost, ['round', 'o/r', '5']).out, [{ event: 'question', ask: 'notes-unusable', problem: 'scope', link: 'https://github.com/o/r/pull/5' }]);
   assert.deepEqual(lost.agentRuns(), []);
+  // The store's record lost too: a machine that held notes asks rather than reading the refused lookup as none.
+  fs.rmSync(path.join(data(lost.config), 'config.json'));
+  assert.ok(run(lost, ['state', 'o/r', '5']).out.some((l) => l.event === 'question' && l.ask === 'notes-store'));
 });
 
 test('3: the repository store is refused unless the account owns it, it is private, and nobody else collaborates; checked before every read and write; never created', () => {
@@ -224,6 +227,13 @@ test('6: a blocker under a "do not flag" note is published as asked; minors are 
   q.agents({ reviewer: [proposal], verifier: [{ findings: [kept({ text: `The reviewer said: ${NOTES.toUpperCase()}` })], verdicts: [] }] });
   assert.deepEqual(run(q, ['round', 'o/r', '5']).out, [{ event: 'failed', reason: 'verifier-list' }]);
   assert.equal(reviewPosts(q).length, 0);
+  // A sentence of a list item is caught too; a path the notes name is not a quote.
+  const { checkList } = require('../scripts/review-until-approve');
+  const list = (text) => JSON.stringify({ findings: [{ class: 'minor', file: null, line: null, span: null, text }], verdicts: [] });
+  const opts = { state: null, roundDir: q.dir, secrets: [], notes: '- Approach X is fine. The retry loop worries me because it never backs off.\n- src/parser/index.js' };
+  assert.equal(checkList(list('Notes: the retry loop worries me because it never backs off'), opts).ok, false);
+  assert.equal(checkList(list('Notes: Approach X is fine.'), opts).ok, false);
+  assert.equal(checkList(list('The loop in src/parser/index.js never ends.'), opts).ok, true);
   // A set-aside whose span does not occur at the head fails the list.
   const b = world();
   notes(b, NOTES, 'gist');
@@ -268,9 +278,16 @@ test('decide approves nothing while the notes are only cached or not yet weighed
   }
 });
 
-test('state reports a failed store read as github', () => {
+test('state and decide report a failed store read as github', () => {
   const w = world({ fail: [] });
   notes(w, NOTES, 'gist');
   w.update((v) => { v.fail.push({ match: ' gists', times: 1, status: '502' }); });
   assert.deepEqual(run(w, ['state', 'o/r', '5']).out, [{ event: 'error', reason: 'github' }]);
+  w.update((v) => {
+    v.reviews.push(stateReview(w, { findings: [{ key: '1.1', class: 'blocker', status: 'open', file: 'a.js', line: 3, raised: w.head, at: w.head, closed: null, closedRound: null, decided: false }] }));
+    v.fail.push({ match: ' gists', times: 1, status: '502' });
+  });
+  const d = run(w, ['decide', 'o/r', '5', '1.1', 'waive', '--reason', 'Not a problem.']);
+  assert.deepEqual(events(d), ['decided', 'error']);
+  assert.equal(d.out[1].reason, 'github');
 });
