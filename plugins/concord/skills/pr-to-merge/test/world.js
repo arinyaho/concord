@@ -77,7 +77,7 @@ else if (a[0] === 'api' && url === 'graphql' && /resolveReviewThread/.test(field
   if (w.queue) p.queued = true;
   else {
     p.state = 'MERGED';
-    p.mergeCommit = 'mc' + p.number;
+    p.mergeCommit = p.mergeTo || 'mc' + p.number;
     const parent = a.includes('--merge') && repo.prs.find((x) => x.headRefName === p.baseRefName && x.state === 'OPEN');
     if (parent) {
       const merge = 'merge' + p.number;
@@ -193,7 +193,7 @@ if (b.moveHead) {
 }
 for (const [f, text] of Object.entries(b.edits || {})) {
   const file = path.join(worktree, f);
-  if (hook('Write', { file_path: file, content: text }) === 'allow') fs.writeFileSync(file, text);
+  if (hook('Write', { file_path: file, content: text }) === 'allow') { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); }
 }
 const out = path.join(session, 'result.json');
 if (hook('Write', { file_path: out, content: '' }) === 'allow' && (b.result || b.resultRaw)) fs.writeFileSync(out, b.resultRaw || JSON.stringify(b.result));

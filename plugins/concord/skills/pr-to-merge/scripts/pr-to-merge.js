@@ -538,7 +538,7 @@ function evaluate(pr) {
   const d = details(pr);
   // Who gets the work that needs a model: 'start' a session now, 'wait' for the running one, or report it ('off'
   // without a clone or for a head branch in another repository, 'cap' past the daily cap).
-  const sessions = own ? sessionsFor(pr) : 'off';
+  let sessions = own ? sessionsFor(pr) : 'off';
   const items = own ? activity(pr, reviews, d) : [];
   const fresh = items.filter((i) => i.answerable && !(i.key in record.seen));
   const answerable = sessions === 'start' || sessions === 'wait' ? fresh.filter((i) => admitted(pr, i.it)) : [];
@@ -583,6 +583,8 @@ function evaluate(pr) {
   const conflictKey = `session:conflict:${tag(pr)}@${pr.head}`;
   const checkKey = `session:check:${tag(pr)}@${pr.head}`;
   let handed = null;
+  // A session that ended since this check listed the pull requests may have pushed: work goes only to the head GitHub reports now.
+  if (sessions === 'start' && (conflict || red.length || reviewInput) && onePr(pr.repo, pr.number).head !== pr.head) sessions = 'wait';
   if (sessions === 'start') {
     if (conflict && !(conflictKey in record.seen)) handed = startSession(pr, 'conflict', [conflictKey], {});
     else if (red.length && !(checkKey in record.seen)) handed = startSession(pr, 'check', [checkKey], { runs: red });
@@ -593,7 +595,8 @@ function evaluate(pr) {
   const later = (key) => sessions === 'wait' && !(key in record.seen);
   if (conflict && handed !== 'conflict' && !later(conflictKey)) say('conflict', 'conflict');
   if (red.length && handed !== 'check' && !later(checkKey)) say('red', 'required check still red after one re-run');
-  if (handed || !qualifiesWithoutHolds) return e;
+  // Work handed to a session, or waiting for one, holds the merge until it is answered or reported.
+  if (handed || (sessions === 'wait' && answerable.length) || !qualifiesWithoutHolds) return e;
   if (changesRequested) say('changes', 'changes requested');
   if (holds.length) say('held', `held by ${holds.join(', ')}`);
   if (changesRequested || holds.length || failed.length || pr.mergeable !== 'MERGEABLE') return e;
@@ -682,7 +685,7 @@ function merge(e, mergeCommit) {
   emit(`merged ${tag(pr)} into ${clean(pr.baseRef)} (${word}) head ${short(pr.head)}; not passed: ${e.notPassed}; unresolved threads: ${e.unresolved}`);
   record.following.push({ repo: pr.repo, number: pr.number, head: pr.head, merge: after.mergeCommit, at: Date.now() });
   // The ticket step of the user's own pull request goes to a session in a later check.
-  if (isOwn(pr) && opts.checkout && !pr.cross) record.tickets.push({ repo: pr.repo, number: pr.number, head: pr.head, headRef: pr.headRef, baseRef: pr.baseRef, cross: false });
+  if (isOwn(pr) && opts.checkout && !pr.cross) record.tickets.push({ repo: pr.repo, number: pr.number, head: pr.head, merge: after.mergeCommit, headRef: pr.headRef, baseRef: pr.baseRef, cross: false });
 }
 
 // For a day after a merge: the runs still going on the merged head and those the merge starts on its base. A failed
@@ -790,20 +793,23 @@ function tidySessions(harness) {
   return readSessions(harness);
 }
 
-// Checks the head out into the session's worktree from a git directory of the script's own, fetched from the clone;
-// for a conflict, starts the merge of the base and leaves it unfinished.
+// Checks the head (for the ticket step, the merge commit) out into the session's worktree from a git directory of the
+// script's own, fetched from the clone; for a conflict, starts the merge of the base and leaves it unfinished. The
+// commit identity is the clone's.
 function prepare(pr, kind, s) {
   const dir = opts.checkout;
   git(dir, ['-c', `core.hooksPath=${s.hooks}`, '-c', 'core.fsmonitor=false', 'fetch', '-q', 'origin', `+refs/heads/${pr.baseRef}:refs/remotes/origin/${pr.baseRef}`, `refs/pull/${pr.number}/head`]);
   const remote = git(dir, ['remote', 'get-url', 'origin']).out.trim();
+  const identity = Object.fromEntries(['user.name', 'user.email'].map((k) => [k, git(dir, ['config', '--get', k], [0, 1]).out.trim()]).filter(([, v]) => v));
+  const at = kind === 'ticket' && pr.merge ? pr.merge : pr.head;
   sgit(s, ['init', '-q']);
-  sgit(s, ['fetch', '-q', '--no-tags', dir, pr.head]);
-  sgit(s, ['checkout', '-q', '--detach', pr.head]);
-  if (kind !== 'conflict') return { remote, input: {} };
+  sgit(s, ['fetch', '-q', '--no-tags', dir, at]);
+  sgit(s, ['checkout', '-q', '--detach', at]);
+  if (kind !== 'conflict') return { remote, identity, input: {} };
   const base = git(dir, ['rev-parse', `refs/remotes/origin/${pr.baseRef}^{commit}`]).out.trim();
   sgit(s, ['fetch', '-q', '--no-tags', dir, base]);
   sgit(s, ['merge', '-q', '--no-ff', '--no-commit', base], [0, 1]);
-  return { remote, input: { base, conflicted: sgit(s, ['diff', '--name-only', '--diff-filter=U']).out.split('\n').filter(Boolean) } };
+  return { remote, identity, input: { base, conflicted: sgit(s, ['diff', '--name-only', '--diff-filter=U']).out.split('\n').filter(Boolean) } };
 }
 
 // The failed jobs' logs of the runs still red after their re-run, the last 256 KiB of each, as files in the session directory.
@@ -865,7 +871,7 @@ function startSession(pr, kind, keys, input) {
     for (const d of [s.dir, s.hooks, s.worktree, s.session]) runtime.ownerDir(d);
     runtime.writeAtomic(path.join(s.dir, 'record.json'), JSON.stringify(rec));
     const prepared = prepare(pr, kind, s);
-    rec.remote = prepared.remote;
+    Object.assign(rec, { remote: prepared.remote, identity: prepared.identity });
     const all = { kind, repo: pr.repo, number: pr.number, head: pr.head, headRef: pr.headRef, baseRef: pr.baseRef, ...input, ...prepared.input };
     if (kind === 'check') all.logs = jobLogs(pr, input.runs, s.session);
     runtime.writeAtomic(path.join(s.session, 'input.json'), JSON.stringify(all, null, 2));
@@ -876,7 +882,7 @@ function startSession(pr, kind, keys, input) {
     Object.assign(rec, { pid: child.pid ?? null, start: child.pid ? runtime.startTime(child.pid) : null });
     runtime.writeAtomic(path.join(s.dir, 'record.json'), JSON.stringify(rec));
   } catch (err) {
-    if (err instanceof RateLimited) { for (const k of keys) delete record.seen[k]; throw err; }
+    if (err instanceof RateLimited) { for (const k of keys) delete record.seen[k]; fs.rmSync(s.dir, { recursive: true, force: true }); throw err; }
     warn(`${tag(pr)} session`, err);
     finishSession({ ...rec, dir: s.dir }, { status: 'failed', reason: 'not started' });
   }
@@ -904,7 +910,18 @@ class SessionFailed extends Error {}
 
 // Commits the session's edits with a fixed message and the input keys, never agent text. A conflict resolution is
 // always committed (it finishes the merge) and never with a conflict marker left in a file that conflicted.
+// A `.git` the session made anywhere in the worktree would be a repository whose configuration git reads (and whose
+// filter commands it runs) while adding files: such a result is refused before any git call.
+function nestedRepository(dir) {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (e.name.toLowerCase() === '.git') return true;
+    if (e.isDirectory() && nestedRepository(path.join(dir, e.name))) return true;
+  }
+  return false;
+}
+
 function commitSession(r, s, input) {
+  if (nestedRepository(s.worktree)) throw new SessionFailed('nested repository');
   sgit(s, ['add', '-A']);
   if (r.kind === 'conflict') {
     const marker = /^(<{7} |={7}\r?$|>{7} )/m;
@@ -913,14 +930,15 @@ function commitSession(r, s, input) {
   const message = r.kind === 'conflict'
     ? `Merge ${clean(r.baseRef)} into ${clean(r.headRef)}\n\nConflicts resolved by a pr-to-merge session for #${r.number}.`
     : `${r.kind === 'check' ? 'Fix the failing check' : 'Answer the review'} on #${r.number}\n\nBy a pr-to-merge session. ${r.kind === 'check' ? `Runs: ${(input.runs || []).join(', ')}` : `Items: ${(input.items || []).map((i) => i.key).join(', ')}`}`;
-  sgit(s, ['commit', '-q', '--no-verify', '-m', message]);
+  sgit(s, [...Object.entries(r.identity || {}).flatMap(([k, v]) => ['-c', `${k}=${v}`]), 'commit', '-q', '--no-verify', '-m', message]);
   return sgit(s, ['rev-parse', 'HEAD']).out.trim();
 }
 
-// Pushes the commit as a fast-forward of the head the session started from: refused when the head moved.
+// Pushes the commit, a child of the head the session started from, only while the branch is still at that head: a
+// fast-forward of it, refused when the head moved.
 function pushSession(r, s, sha) {
   if (onePr(r.repo, r.number).head !== r.head) throw new SessionFailed('head moved');
-  try { sgit(s, ['push', '-q', r.remote, `${sha}:refs/heads/${r.headRef}`]); } catch (e) { warn(`${r.repo}#${r.number} session push`, e); throw new SessionFailed('push refused'); }
+  try { sgit(s, ['push', '-q', `--force-with-lease=refs/heads/${r.headRef}:${r.head}`, r.remote, `${sha}:refs/heads/${r.headRef}`]); } catch (e) { warn(`${r.repo}#${r.number} session push`, e); throw new SessionFailed('push refused'); }
 }
 
 // Posts text the session wrote only after the post-text filter passes it.
@@ -940,21 +958,22 @@ function post(r, args, text, secrets) {
 function postReplies(r, items, replies, sha, secrets) {
   const commit = sha ? [`Commit ${sha.slice(0, 12)}.`] : [];
   const cc = (list) => { const people = [...new Set(list.filter((i) => !i.automated).map((i) => clean(i.author)))]; return people.length ? [`cc ${people.map((p) => `@${p}`).join(' ')}`] : []; };
-  let posted = 0;
+  const posted = [];
   for (const rep of replies.filter((x) => items.get(x.item).kind === 'thread')) {
     const i = items.get(rep.item);
     const text = [postText.escapeText(rep.body), ...commit, ...cc([i])].join('\n\n');
-    if (post(r, ['api', '-X', 'POST', `repos/${r.repo}/pulls/${r.number}/comments/${i.inReplyTo || i.id}/replies`, '-f', `body=${text}`], text, secrets)) posted += 1;
+    if (post(r, ['api', '-X', 'POST', `repos/${r.repo}/pulls/${r.number}/comments/${i.inReplyTo || i.id}/replies`, '-f', `body=${text}`], text, secrets)) posted.push(rep);
   }
   const rest = replies.filter((x) => items.get(x.item).kind !== 'thread');
   if (rest.length) {
     const text = [...rest.map((x) => `${items.get(x.item).url}\n${postText.escapeText(x.body)}`), ...commit, ...cc(rest.map((x) => items.get(x.item)))].join('\n\n');
-    if (post(r, ['api', '-X', 'POST', `repos/${r.repo}/issues/${r.number}/comments`, '-f', `body=${text}`], text, secrets)) posted += rest.length;
+    if (post(r, ['api', '-X', 'POST', `repos/${r.repo}/issues/${r.number}/comments`, '-f', `body=${text}`], text, secrets)) posted.push(...rest);
   }
   return posted;
 }
 
-// Resolves the threads the session marked whose first comment an automated reviewer wrote; a person's thread stays open.
+// Resolves the threads of posted replies the session marked whose first comment an automated reviewer wrote; a
+// person's thread stays open.
 function resolveThreads(r, items, replies) {
   const roots = new Set(replies.filter((x) => x.resolve === true && items.get(x.item).kind === 'thread').map((x) => items.get(x.item)).map((i) => i.inReplyTo || i.id));
   if (!roots.size) return;
@@ -974,8 +993,10 @@ function askAgain(r, sha) {
   const pr = { repo: r.repo, number: r.number, head: sha, author: opts.self, authorBot: false };
   const reviews = restPages(`repos/${r.repo}/pulls/${r.number}/reviews?per_page=100`);
   const now = (gh(['api', `repos/${r.repo}/pulls/${r.number}/requested_reviewers`]) || {}).users || [];
+  // Only accounts with write access can be requested; one without would make GitHub refuse the whole request.
+  const writes = (login) => { try { return canWrite(pr, login); } catch (e) { if (e instanceof RateLimited) throw e; return false; } };
   const people = [...new Set(reviews.filter((x) => x.state !== 'PENDING' && x.user?.login && !isBot(x.user) && !self(x.user)).map((x) => lower(x.user.login)))]
-    .filter((l) => !now.some((u) => lower(u.login) === l));
+    .filter((l) => !now.some((u) => lower(u.login) === l) && writes(l));
   if (people.length) tryRequest(pr, people);
 }
 
@@ -1011,8 +1032,9 @@ async function workSession(r, s) {
   const verdicts = pick(out.tickets, tickets, 'issue');
   const questions = Array.isArray(out.questions) ? out.questions : [];
   const intent = r.kind === 'conflict' && out.conflict === 'intent';
-  const st = { status: questions.length || intent || out.outside ? 'question' : 'done', pushed: null, replies: 0, questions, minor: Array.isArray(out.minor) ? out.minor : [],
-    ...(intent ? { conflict: 'intent' } : {}), ...(out.outside ? { outside: out.outside } : {}), items: [...items.keys(), ...tickets.keys()] };
+  const description = r.kind === 'review' && out.description ? out.description : null;
+  const st = { status: questions.length || intent || out.outside || description ? 'question' : 'done', pushed: null, replies: 0, questions, minor: Array.isArray(out.minor) ? out.minor : [],
+    ...(intent ? { conflict: 'intent' } : {}), ...(out.outside ? { outside: out.outside } : {}), ...(description ? { description } : {}), items: [...items.keys(), ...tickets.keys()] };
   const secrets = postText.credentials(r.harness);
   try {
     if (r.kind !== 'ticket' && !intent) {
@@ -1023,10 +1045,17 @@ async function workSession(r, s) {
     if (!(e instanceof SessionFailed)) throw e;
     return { ...st, status: 'failed', reason: e.message };
   }
-  st.replies = postReplies(r, items, replies, st.pushed, secrets);
-  resolveThreads(r, items, replies);
-  if (st.pushed) askAgain(r, st.pushed);
-  applyTickets(r, tickets, verdicts, secrets);
+  // What follows the push cannot undo it: a failure here leaves the status with what was done and the reason.
+  try {
+    const posted = postReplies(r, items, replies, st.pushed, secrets);
+    st.replies = posted.length;
+    resolveThreads(r, items, posted);
+    if (st.pushed) askAgain(r, st.pushed);
+    applyTickets(r, tickets, verdicts, secrets);
+  } catch (e) {
+    if (!(e instanceof RateLimited)) warn(`${r.repo}#${r.number} session`, e);
+    st.reason = `incomplete: ${e instanceof RateLimited ? 'rate limited' : 'error'}`;
+  }
   return st;
 }
 
