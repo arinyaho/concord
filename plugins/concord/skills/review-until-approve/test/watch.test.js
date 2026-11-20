@@ -262,9 +262,10 @@ test('criterion 6: a question line stays pending across watch status until decid
   entry(w);
   w.check();
   const asked = 'o/r#5 question asked 1.1 https://github.com/o/r/pull/5';
-  assert.deepEqual(w.lines(), ['o/r#5 review-blocked label restored', asked]);
+  // Lines added in the same millisecond have no order.
+  assert.deepEqual(w.lines().sort(), [asked, 'o/r#5 review-blocked label restored']);
   const status = w.sh(['watch', 'status', '--harness', 'claude']);
-  assert.deepEqual(status.out.filter((l) => l.event === 'notice').map((l) => l.notice), ['o/r#5 review-blocked label restored', asked]);
+  assert.deepEqual(status.out.filter((l) => l.event === 'notice').map((l) => l.notice).sort(), [asked, 'o/r#5 review-blocked label restored']);
   assert.deepEqual(w.lines(), [asked]);
   w.sh(['watch', 'status', '--harness', 'claude']);
   assert.deepEqual(w.lines(), [asked]);
