@@ -131,8 +131,8 @@ function addEntry(list, entry) {
 
 class RateLimited extends Error {}
 // Commands run with argument arrays, never through a shell, from a neutral directory so `gh` never acts on a local clone.
-function run(cmd, args, { cwd = os.tmpdir(), ok = [0] } = {}) {
-  const r = spawnSync(cmd, args, { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 300000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1' } });
+function run(cmd, args, { cwd = os.tmpdir(), ok = [0], input } = {}) {
+  const r = spawnSync(cmd, args, { cwd, input, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 300000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1' } });
   if (r.error) throw new Error(`${cmd} ${args.slice(0, 2).join(' ')}: ${r.error.message}`);
   if (!ok.includes(r.status)) {
     const detail = String(r.stderr || r.stdout || '').trim();
@@ -732,7 +732,7 @@ const sessionPaths = (harness, id) => {
 };
 // Every git call for a session names its git directory and worktree, an empty hooks directory, and no fsmonitor, so
 // nothing from the branch runs and nothing the session wrote is read as configuration.
-const sgit = (s, args, ok) => run('git', [`--git-dir=${s.git}`, `--work-tree=${s.worktree}`, '-c', `core.hooksPath=${s.hooks}`, '-c', 'core.fsmonitor=false', ...args], { cwd: s.worktree, ok });
+const sgit = (s, args, ok, input) => run('git', [`--git-dir=${s.git}`, `--work-tree=${s.worktree}`, '-c', `core.hooksPath=${s.hooks}`, '-c', 'core.fsmonitor=false', ...args], { cwd: s.worktree, ok, input });
 
 function readSessions(harness) {
   const root = sessionRoot(harness);
@@ -920,9 +920,20 @@ function nestedRepository(dir) {
   return false;
 }
 
+// Stages every tracked file but submodules, and every untracked file not ignored, by name. Unlike `git add -A`, which
+// runs `git status` inside a repository it finds in the worktree (and so that repository's filters), update-index only
+// hashes the named files, so a `.git` a leftover process made after the check above is never read as a repository.
+function stageWorktree(s) {
+  const z = (out) => out.split('\0').filter(Boolean);
+  const tracked = z(sgit(s, ['ls-files', '-z', '-s']).out).filter((l) => !l.startsWith('160000 ')).map((l) => l.slice(l.indexOf('\t') + 1));
+  const untracked = z(sgit(s, ['ls-files', '-z', '--others', '--exclude-standard']).out);
+  if (untracked.some((p) => p.endsWith('/'))) throw new SessionFailed('nested repository');
+  sgit(s, ['update-index', '--add', '--remove', '-z', '--stdin'], [0], [...new Set([...tracked, ...untracked])].map((p) => `${p}\0`).join(''));
+}
+
 function commitSession(r, s, input) {
   if (nestedRepository(s.worktree)) throw new SessionFailed('nested repository');
-  sgit(s, ['add', '-A']);
+  stageWorktree(s);
   if (r.kind === 'conflict') {
     const marker = /^(<{7} |={7}\r?$|>{7} )/m;
     if ((input.conflicted || []).some((f) => marker.test(sgit(s, ['show', `:${f}`], [0, 128]).out))) throw new SessionFailed('conflict markers left');
@@ -955,10 +966,9 @@ function post(r, args, text, secrets) {
 
 // Replies: one per thread item, in its thread; one conversation comment for the rest. The session's text is escaped;
 // the script adds the commit and mentions each person (never an automated reviewer).
-function postReplies(r, items, replies, sha, secrets) {
+function postReplies(r, items, replies, sha, secrets, posted) {
   const commit = sha ? [`Commit ${sha.slice(0, 12)}.`] : [];
   const cc = (list) => { const people = [...new Set(list.filter((i) => !i.automated).map((i) => clean(i.author)))]; return people.length ? [`cc ${people.map((p) => `@${p}`).join(' ')}`] : []; };
-  const posted = [];
   for (const rep of replies.filter((x) => items.get(x.item).kind === 'thread')) {
     const i = items.get(rep.item);
     const text = [postText.escapeText(rep.body), ...commit, ...cc([i])].join('\n\n');
@@ -1046,9 +1056,9 @@ async function workSession(r, s) {
     return { ...st, status: 'failed', reason: e.message };
   }
   // What follows the push cannot undo it: a failure here leaves the status with what was done and the reason.
+  const posted = [];
   try {
-    const posted = postReplies(r, items, replies, st.pushed, secrets);
-    st.replies = posted.length;
+    postReplies(r, items, replies, st.pushed, secrets, posted);
     resolveThreads(r, items, posted);
     if (st.pushed) askAgain(r, st.pushed);
     applyTickets(r, tickets, verdicts, secrets);
@@ -1056,6 +1066,7 @@ async function workSession(r, s) {
     if (!(e instanceof RateLimited)) warn(`${r.repo}#${r.number} session`, e);
     st.reason = `incomplete: ${e instanceof RateLimited ? 'rate limited' : 'error'}`;
   }
+  st.replies = posted.length;
   return st;
 }
 
