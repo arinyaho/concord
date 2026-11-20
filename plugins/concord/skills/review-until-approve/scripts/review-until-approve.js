@@ -42,8 +42,9 @@ const REQUESTS = path.join(__dirname, '..', 'references');
 const NOTES_ASKS = ['notes-store', 'notes-unusable'];
 const ASKS = ['asked', 'unreadable', 'submodule', 'agent-cannot-start', 'hook-did-not-run', 'cap', 'account', 'overflow', ...NOTES_ASKS];
 // Why a notes store cannot be used: no gist scope, the repository missing or not readable, owned by another account,
-// not private, shared with another collaborator, a stored file that does not parse, or notes only in the cache.
-const PROBLEMS = ['scope', 'missing', 'owner', 'visibility', 'collaborator', 'format', 'unsaved'];
+// not private, shared with another collaborator, publishing a GitHub Pages site, a stored file that does not parse, or
+// notes only in the cache.
+const PROBLEMS = ['scope', 'missing', 'owner', 'visibility', 'collaborator', 'pages', 'format', 'unsaved'];
 const REASONS = ['reviewer-output', 'verifier-list', 'prepare', 'submission', 'refused', 'author', 'github', 'reason-refused', 'internal', 'probe'];
 const PENDING = ['first', 'head', 'reply', 'description', 'notes', 'start-over'];
 const WHY = ['closed', 'head-moved', 'draft', 'author', 'blocker', 'unreadable', 'submodule', 'approved', 'overflow'];
@@ -436,12 +437,25 @@ function parseNotes(content) {
 const gistDescription = (repo, n) => `concord review notes: ${repo.toLowerCase()}#${Number(n)}`;
 const contentsUrl = (name, repo, n) => `repos/${name}/contents/${repo.toLowerCase()}/${Number(n)}.md`;
 const storeJson = (args, input) => ghJson(args, input, true);
-const refusedOn = (problem, test) => (e) => { throw e instanceof GhError && test(e) ? new Refused(problem) : e; };
+// A 404 is the store's refusal; any other failure (a 403 for a rate limit included) is GitHub's and is reported so.
+const refusedOn = (problem) => (e) => { throw e instanceof GhError && e.status === '404' ? new Refused(problem) : e; };
+// Whether the token may use secret gists: an OAuth token lists its scopes in a header, and without `gist` the account's
+// secret gists are neither listed nor written. A token that lists no scopes is tried.
+let SCOPES;
+function gistScoped() {
+  if (SCOPES === undefined) {
+    const head = gh(['api', '-i', 'user'], undefined, true).split(/\r?\n\r?\n/)[0];
+    const m = /^x-oauth-scopes:(.*)$/im.exec(head);
+    SCOPES = m ? m[1].split(',').map((x) => x.trim()) : null;
+  }
+  return SCOPES === null || SCOPES.includes('gist');
+}
 
 // The account's secret gists described for the pull request, newest first.
 function notesGists(repo, n, login) {
+  if (!gistScoped()) throw new Refused('scope');
   let pages;
-  try { pages = storeJson(['api', '--paginate', '--slurp', 'gists?per_page=100']); } catch (e) { refusedOn('scope', (x) => x.notFound)(e); }
+  try { pages = storeJson(['api', '--paginate', '--slurp', 'gists?per_page=100']); } catch (e) { refusedOn('scope')(e); }
   return pages.flat().filter((g) => g && g.public === false && lower(g.owner?.login) === login && g.description === gistDescription(repo, n))
     .sort((a, b) => time(b.created_at) - time(a.created_at));
 }
@@ -450,11 +464,13 @@ function notesGists(repo, n, login) {
 function checkRepo(store, login) {
   const name = store.slice('repo:'.length);
   let r;
-  try { r = storeJson(['api', `repos/${name}`]); } catch (e) { refusedOn('missing', (x) => x.notFound)(e); }
+  try { r = storeJson(['api', `repos/${name}`]); } catch (e) { refusedOn('missing')(e); }
   if (lower(r?.owner?.login) !== login) throw new Refused('owner');
   if (r.visibility !== 'private' || r.private !== true) throw new Refused('visibility');
+  // A Pages site of a private repository can be public, and would serve the notes file.
+  if (r.has_pages !== false) throw new Refused('pages');
   let people;
-  try { people = storeJson(['api', '--paginate', '--slurp', `repos/${name}/collaborators?affiliation=all&per_page=100`]).flat(); } catch (e) { refusedOn('collaborator', (x) => x.notFound)(e); }
+  try { people = storeJson(['api', '--paginate', '--slurp', `repos/${name}/collaborators?affiliation=all&per_page=100`]).flat(); } catch (e) { refusedOn('collaborator')(e); }
   if (people.some((p) => lower(p?.login) !== login)) throw new Refused('collaborator');
   return name;
 }
@@ -486,7 +502,7 @@ function writeStore(ctx, store, notes, was) {
     try {
       res = was.id ? storeJson(['api', '-X', 'PATCH', `gists/${was.id}`, '--input', '-'], JSON.stringify({ files }))
         : storeJson(['api', '-X', 'POST', 'gists', '--input', '-'], JSON.stringify({ description: gistDescription(repo, n), public: false, files }));
-    } catch (e) { refusedOn('scope', (x) => x.notFound)(e); }
+    } catch (e) { refusedOn('scope')(e); }
     if (res.public !== false) throw new Refused('visibility');
     return;
   }
@@ -507,10 +523,12 @@ function loadNotes(ctx, stateHash) {
   try { got = readStore(ctx, store || 'gist'); } catch (e) {
     if (!(e instanceof Refused)) throw e;
     if (store) return { ask: 'notes-unusable', problem: e.problem };
-    got = { notes: null };
+    got = { notes: null, refused: true };
   }
+  // Notes `notes` saved while the store was read stay as they are, and keep rounds waiting until stored.
+  if (readCache(ctx)?.stored === false) return store ? { ask: 'notes-unusable', problem: 'unsaved' } : { ask: 'notes-store' };
   if (!got.notes) {
-    fs.rmSync(cacheFile(ctx), { force: true });
+    if (!got.refused) fs.rmSync(cacheFile(ctx), { force: true });
     return stateHash ? { ask: 'notes-store' } : { hash: '', text: '', duplicates: 0 };
   }
   writeCache(ctx, { ...got.notes, stored: true });
@@ -958,7 +976,10 @@ function reviewerOk(text) {
 
 // The verifier's list after the checks: { ok, list } or { ok: false }. A span must occur in its file at the head; a
 // verdict claiming the code settles something without a quoted span becomes `asked`.
-function checkList(text, { state, roundDir, secrets }) {
+// The lines of the notes long enough to recognize, normalized: agent text that contains one is not posted.
+const noteLines = (notes) => String(notes || '').split(/\r\n|\r|\n/).map(norm).filter((l) => l.length >= 12);
+const norm = (t) => String(t).toLowerCase().replace(/\s+/g, ' ').trim();
+function checkList(text, { state, roundDir, secrets, notes = '' }) {
   let v;
   try { v = JSON.parse(text); } catch { return { ok: false, why: 'parse' }; }
   const optList = (x) => x === undefined || Array.isArray(x);
@@ -968,7 +989,8 @@ function checkList(text, { state, roundDir, secrets }) {
     if (!str(file) || !file || path.isAbsolute(file) || file.split(/[\\/]/).includes('..')) return false;
     try { return fs.readFileSync(path.join(head, file), 'utf8').includes(s); } catch { return false; }
   };
-  const textOk = (t) => !t || refusal(escapeText(t), { markers: [], secrets }) === null;
+  const quoted = noteLines(notes);
+  const textOk = (t) => !t || (refusal(escapeText(t), { markers: [], secrets }) === null && !quoted.some((l) => norm(t).includes(l)));
   const spanOk = (s) => !s || refusal(fence(s), { markers: [], secrets }) === null;
   const pathOk = (p) => { if (!p) return true; try { return refusal(fencePath(p), { markers: [], secrets }) === null; } catch { return false; } };
   const kept = (x) => {
@@ -1230,7 +1252,7 @@ async function roundVerb(ctx, opts) {
     fs.mkdirSync(path.join(ctx.roundDir, 'review'));
     fs.writeFileSync(path.join(ctx.roundDir, 'review', 'result.json'), rev.output);
     const ver = await agent(ctx, 'verifier', (output) => request('verifier-request.md', { ...fill, OUTPUT: output, RESULT: path.join(ctx.roundDir, 'review', 'result.json') }),
-      (t) => { const c = checkList(t, { state: f.state, roundDir: ctx.roundDir, secrets: ctx.secrets }); if (!c.ok) log('verifier list', c.why); return c.ok ? c.list : null; });
+      (t) => { const c = checkList(t, { state: f.state, roundDir: ctx.roundDir, secrets: ctx.secrets, notes: notes.text }); if (!c.ok) log('verifier list', c.why); return c.ok ? c.list : null; });
     if (ver.stop) return print({ event: 'question', ask: ver.stop, link: view.url });
     if (ver.fail) return failed(ver.fail);
     const next = nextState(ctx, ver.output, round);
@@ -1283,8 +1305,11 @@ function decideVerb(ctx, pos, opts) {
   ctx.secrets = credentials(ctx.harness);
   const g = ctx.f;
   if (!g.state) return;
+  // Nothing is approved without the notes from their store, or before a round has weighed changed notes.
+  const notes = loadNotes(ctx, g.state.notes);
+  if (notes.ask) print(notesQuestion(notes, ctx.view.url));
   const cond = approval({ state: g.state, live: ctx.view, login, unreadable: g.unreadable, approvedHeads: approvedHeads(ctx.view) });
-  if (cond.approve) for (const l of publishCarried(ctx, {})) print(l);
+  if (cond.approve && !notes.ask && notes.hash === g.state.notes) for (const l of publishCarried(ctx, {})) print(l);
   else label(repo, n, ctx.view, blocking(g.state).length > 0 || g.unreadable);
   askAll(ctx, repo, ctx.view, g);
 }
@@ -1494,15 +1519,17 @@ async function main(argv) {
   trapSignals();
   const ctx = begin(repo, n, opts);
   if (!ctx) return;
-  if (verb === 'state') return stateVerb(ctx);
-  if (verb === 'notes') {
-    try { return notesVerb(ctx, pos, opts); } catch (e) {
-      log('notes', e instanceof GhError ? 'gh failed' : e && e.name);
+  // A failed GitHub read in state or notes is reported as `github`; no stack is logged, so nothing names the store.
+  const guarded = (fn) => {
+    try { return fn(); } catch (e) {
+      log(verb, e instanceof GhError ? 'gh failed' : e && e.name);
       print({ event: 'error', reason: e instanceof GhError ? 'github' : 'internal' });
       process.exitCode = 1;
       return undefined;
     }
-  }
+  };
+  if (verb === 'state') return guarded(() => stateVerb(ctx));
+  if (verb === 'notes') return withLock(ctx, () => guarded(() => notesVerb(ctx, pos, opts)));
   if (verb === 'decide') return withLock(ctx, () => { decideVerb(ctx, pos, opts); recordRun(ctx, false); });
   return withLock(ctx, async () => {
     // A round that throws is recorded like a failed one, so that the watcher holds it and the user hears of it.

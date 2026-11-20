@@ -27,7 +27,7 @@ test('the session never reads the pull request or the round directory and relays
   // Every event and question the script can print is explained.
   for (const e of ['published', 'nothing', 'superseded', 'locked', 'failed', 'merged', 'question', 'error']) assert.match(skill, new RegExp(`\`${e}\``), e);
   for (const a of ['asked', 'unreadable', 'submodule', 'agent-cannot-start', 'hook-did-not-run', 'cap', 'account', 'overflow', 'notes-store', 'notes-unusable']) assert.match(skill, new RegExp(`\`${a}\``), a);
-  for (const p of ['scope', 'missing', 'owner', 'visibility', 'collaborator', 'format', 'unsaved']) assert.match(skill, new RegExp(`\`${p}\``), p);
+  for (const p of ['scope', 'missing', 'owner', 'visibility', 'collaborator', 'pages', 'format', 'unsaved']) assert.match(skill, new RegExp(`\`${p}\``), p);
 });
 
 test('the session saves the user\'s notes only through notes, in the user\'s words, to a store the user chose', () => {

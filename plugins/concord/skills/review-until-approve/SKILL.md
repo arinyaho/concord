@@ -79,8 +79,8 @@ A `question` line names what it asks with `ask`. Ask the user in one message, gi
 - `cap`: `rounds` agent rounds ran in the last 24 hours; no seventh runs. Tell the user; a later invocation runs once the window allows.
 - `account`: the account cannot read the pull request. Ask the user which account to use; never choose another account or profile yourself.
 - `overflow`: the review exceeded GitHub's size limit, so it does not approve. Tell the user.
-- `notes-store`: no store is chosen for notes saved on this machine, or the state on the pull request shows notes that no store this machine knows holds. No round runs. Ask the user to choose a secret gist or a private repository of theirs (see The user's notes), then run `notes <owner/repo> <n> --store gist` or `--store repo:OWNER/NAME` with their answer: it records the store, saves the notes waiting on this machine, or finds the notes there. Then run `round`.
-- `notes-unusable`: the store cannot be used, and no round runs. `problem` says why: `scope` (`gh` lacks the `gist` scope; the user runs `gh auth refresh -s gist`), `missing` (the repository does not exist or the account cannot read it), `owner` (another account owns it), `visibility` (it is not private), `collaborator` (someone else collaborates on it), `format` (the stored notes do not parse), `unsaved` (notes saved on this machine have not reached the store; `notes <owner/repo> <n>` tries again). Tell the user; once it is fixed, run `notes <owner/repo> <n>` and `round`.
+- `notes-store`: no store is chosen for notes saved on this machine, or the state on the pull request shows notes that no store this machine knows holds. No round runs. Ask the user to choose a secret gist or a private repository of theirs (see The user's notes), then run `notes <owner/repo> <n> --store gist` or `--store repo:OWNER/NAME` with their answer: it records the store, saves the notes waiting on this machine, or finds the notes there. Then run `round`. If the notes are gone from every store (deleted), the question repeats: the user gives the notes again, or says there are none, and saving that set (an empty one included) lets rounds run.
+- `notes-unusable`: the store cannot be used, and no round runs. `problem` says why: `scope` (`gh` lacks the `gist` scope; the user runs `gh auth refresh -s gist`), `missing` (the repository does not exist or the account cannot read it), `owner` (another account owns it), `visibility` (it is not private), `collaborator` (someone else collaborates on it), `pages` (it has a GitHub Pages site, which can be public), `format` (the stored notes do not parse), `unsaved` (notes saved on this machine have not reached the store; `notes <owner/repo> <n>` tries again). Tell the user; once it is fixed, run `notes <owner/repo> <n>` and `round`.
 
 ## The user's notes
 
@@ -89,9 +89,9 @@ The notes are the user's view of the pull request ("approach X is fine", a worry
 The notes are kept in a store the user chooses once; neither is a default:
 
 - a secret gist of the reviewing account: no setup, but anyone who learns its URL can read it; it needs the `gist` scope, which `gh auth login` grants by default. Option `--store gist`.
-- a private repository the user owns and nobody else collaborates on, not an organization's internal one. Option `--store repo:OWNER/NAME`. The script checks this before every read and write and never creates the repository.
+- a private repository the user owns and nobody else collaborates on, not an organization's internal one, with no GitHub Pages site. Option `--store repo:OWNER/NAME`. The script checks this before every read and write and never creates the repository.
 
-Pass `--store` with the user's answer to a `notes-store` question, or when the user changes the store; it is recorded for every pull request on this machine, and notes already saved are not moved. A machine whose notes are in no store yet keeps them locally, and no round runs until a store holds them.
+Pass `--store` with the user's answer to a `notes-store` question, or when the user changes the store; it is recorded for every pull request on this machine, and notes already saved are not moved. A machine whose notes are in no store yet keeps them locally, and no round runs until a store holds them. A machine with no store chosen looks for the notes gist only once a review on the pull request records notes; until then, notes saved on another machine reach this one when the user gives the store here with `notes <owner/repo> <n> --store ...`.
 
 `notes` prints:
 

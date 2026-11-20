@@ -42,6 +42,7 @@ const done = (v) => { save(); if (after) fail('gh: HTTP ' + (after.status || '50
 const pr = w.pr;
 let m;
 if (a[0] === 'auth' && a[1] === 'token') console.log(${JSON.stringify(TOKEN)});
+else if (a[0] === 'api' && url === 'user' && a.includes('-i')) process.stdout.write('HTTP/2.0 200 OK\\nX-Oauth-Scopes: ' + (w.noGistScope ? 'repo, read:org' : 'gist, repo, read:org') + '\\n\\n' + JSON.stringify({ login: w.login }));
 else if (a[0] === 'api' && url === 'user') w.login ? out({ login: w.login }) : fail('gh: HTTP 401');
 else if (a[0] === 'api' && url === 'graphql') {
   const q = field('query');
@@ -117,7 +118,7 @@ else if (method === 'POST' && url === 'repos/o/r/pulls/5/reviews') {
   if (!r) fail('gh: HTTP 404');
   const rest = m[2] || '';
   let c;
-  if (!rest && method === 'GET') out({ full_name: m[1], owner: { login: r.owner }, visibility: r.visibility, private: r.visibility !== 'public' });
+  if (!rest && method === 'GET') out({ full_name: m[1], owner: { login: r.owner }, visibility: r.visibility, private: r.visibility !== 'public', has_pages: Boolean(r.pages) });
   else if (rest === '/collaborators' && method === 'GET') out([[{ login: r.owner }, ...(r.collaborators || []).map((login) => ({ login }))]]);
   else if ((c = /^\\/contents\\/(.+)$/.exec(rest))) {
     r.files = r.files || {};

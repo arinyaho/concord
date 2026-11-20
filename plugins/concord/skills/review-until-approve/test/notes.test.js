@@ -93,6 +93,12 @@ test('2: the gist is secret with the fixed description; an empty cache finds it;
   assert.deepEqual(notes(n, NOTES, 'gist').out, [{ event: 'question', ask: 'notes-unusable', problem: 'scope' }]);
   assert.deepEqual(run(n, ['round', 'o/r', '5']).out, [{ event: 'question', ask: 'notes-unusable', problem: 'unsaved', link: 'https://github.com/o/r/pull/5' }]);
   assert.deepEqual(n.agentRuns(), []);
+  // A token without the gist scope never reads as "no notes": with the notes saved earlier, the round waits.
+  const lost = world();
+  notes(lost, NOTES, 'gist');
+  lost.update((v) => { v.noGistScope = true; });
+  assert.deepEqual(run(lost, ['round', 'o/r', '5']).out, [{ event: 'question', ask: 'notes-unusable', problem: 'scope', link: 'https://github.com/o/r/pull/5' }]);
+  assert.deepEqual(lost.agentRuns(), []);
 });
 
 test('3: the repository store is refused unless the account owns it, it is private, and nobody else collaborates; checked before every read and write; never created', () => {
@@ -100,6 +106,7 @@ test('3: the repository store is refused unless the account owns it, it is priva
     owner: privateRepo({ owner: 'someone' }),
     visibility: privateRepo({ visibility: 'internal' }),
     collaborator: privateRepo({ collaborators: ['eve'] }),
+    pages: privateRepo({ pages: true }),
     missing: { repos: {} },
   };
   for (const [problem, extra] of Object.entries(cases)) {
@@ -107,6 +114,9 @@ test('3: the repository store is refused unless the account owns it, it is priva
     assert.deepEqual(notes(w, NOTES, `repo:${STORE}`).out, [{ event: 'question', ask: 'notes-unusable', problem }], problem);
     assert.ok(!w.calls().some((c) => c.a.includes('PUT')), `${problem}: nothing written`);
   }
+  // A 403 (a rate limit, single sign-on) is GitHub's failure, not a refusal that names a check.
+  const limited = world({ ...privateRepo(), fail: [{ match: `repos/${STORE}$`, status: '403' }] });
+  assert.deepEqual(notes(limited, NOTES, `repo:${STORE}`).out, [{ event: 'error', reason: 'github' }]);
   const pub = world(privateRepo({ visibility: 'public' }));
   assert.deepEqual(notes(pub, NOTES, `repo:${STORE}`).out, [{ event: 'question', ask: 'notes-unusable', problem: 'visibility' }]);
 
@@ -208,6 +218,12 @@ test('6: a blocker under a "do not flag" note is published as asked; minors are 
   assert.match(body, /### Set aside by the reviewer's notes\n\n1 minor finding\(s\) not flagged, as the reviewer's notes ask\.\n\n- \*\*minor\*\*\n\n> Set aside by the note\./);
   assert.match(body, /```\none\n```/);
   assert.ok(!body.includes('Unflagged minor.'));
+  // Agent text that quotes a line of the notes is not posted: the list fails.
+  const q = world();
+  notes(q, NOTES, 'gist');
+  q.agents({ reviewer: [proposal], verifier: [{ findings: [kept({ text: `The reviewer said: ${NOTES.toUpperCase()}` })], verdicts: [] }] });
+  assert.deepEqual(run(q, ['round', 'o/r', '5']).out, [{ event: 'failed', reason: 'verifier-list' }]);
+  assert.equal(reviewPosts(q).length, 0);
   // A set-aside whose span does not occur at the head fails the list.
   const b = world();
   notes(b, NOTES, 'gist');
@@ -238,4 +254,23 @@ test('7: a state whose notes hash the machine cannot obtain runs nothing and ask
     const lines = fs.readdirSync(path.join(w.config, 'concord', 'notices')).map((f) => fs.readFileSync(path.join(w.config, 'concord', 'notices', f), 'utf8'));
     assert.ok(lines.some((l) => l.includes('o/r#5 question notes-store https://github.com/o/r/pull/5')), `${name}: ${lines}`);
   }
+});
+
+test('decide approves nothing while the notes are only cached or not yet weighed by a round', () => {
+  for (const name of ['cached only', 'changed']) {
+    const w = world();
+    w.update((v) => { v.reviews.push(stateReview(w, { findings: [{ key: '1.1', class: 'blocker', status: 'open', file: 'a.js', line: 3, raised: w.head, at: w.head, closed: null, closedRound: null, decided: false }] })); });
+    const r0 = notes(w, NOTES, name === 'changed' ? 'gist' : undefined);
+    assert.equal(r0.out[0].event, name === 'changed' ? 'notes' : 'question', name);
+    const d = run(w, ['decide', 'o/r', '5', '1.1', 'waive', '--reason', 'Not a problem.']);
+    assert.deepEqual(events(d), name === 'changed' ? ['decided'] : ['decided', 'question'], name);
+    assert.equal(reviewPosts(w).length, 0, `${name}: nothing approved`);
+  }
+});
+
+test('state reports a failed store read as github', () => {
+  const w = world({ fail: [] });
+  notes(w, NOTES, 'gist');
+  w.update((v) => { v.fail.push({ match: ' gists', times: 1, status: '502' }); });
+  assert.deepEqual(run(w, ['state', 'o/r', '5']).out, [{ event: 'error', reason: 'github' }]);
 });
