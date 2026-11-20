@@ -330,3 +330,99 @@ test('watch add starts nothing where the state directory or GitHub cannot be rea
   const bad = w.run(['watch', 'add', 'o/r', '5', '--harness', 'claude', '--model', '--dangerous'], w.extra);
   assert.equal(bad.status, 2);
 });
+
+test('review finding: the user\'s stop during a watcher round leaves that round unpublished and its lines unlisted', () => {
+  const w = watched();
+  w.agents({ sleep: 1500, reviewer: [proposal], verifier: [{ findings: [kept], verdicts: [] }] });
+  w.update((v) => { v.reviews.push(stateReview(w, {})); });
+  w.push({ 'a.js': 'one\ntwo\nbad line\nthree\nfour\n' });
+  entry(w);
+  settle(w);
+  assert.ok(until(() => fs.existsSync(path.join(w.bin, 'sleeping'))), 'the round started');
+  assert.deepEqual(w.sh(['watch', 'remove', 'o/r', '5', '--harness', 'claude']).out, [{ event: 'unwatched', pr: 'o/r#5' }]);
+  assert.ok(until(() => w.idle() && w.agentRuns().length === 2, 60000));
+  assert.equal(reviews(w).length, 1, 'nothing published after the stop');
+  assert.deepEqual(w.lines(), []);
+  assert.deepEqual(w.notifications(), []);
+});
+
+test('review finding: an approval GitHub refuses is held like a failed round, not retried on every check', () => {
+  const w = watched({ fail: [{ match: 'POST .*pulls/5/reviews', status: '422' }] });
+  w.update((v) => { v.reviews.push(stateReview(w, {})); });
+  entry(w);
+  for (let i = 0; i < 4; i++) { settle(w); assert.ok(until(() => w.idle())); }
+  assert.equal(w.calls().filter((c) => c.a.includes('POST') && c.a.some((x) => /pulls\/5\/reviews$/.test(x))).length, 1);
+  assert.deepEqual(w.lines(), ['o/r#5 round failed: refused']);
+  assert.equal(w.notifications().length, 1);
+});
+
+test('review finding: a watcher round that throws is listed and held, not restarted on every check', () => {
+  const w = watched({ fail: [{ match: 'compare' , status: '500' }] });
+  w.update((v) => { v.reviews.push(stateReview(w, {})); });
+  w.push({ 'a.js': 'one\ntwo\nbad line\nthree\nfour\n' });
+  entry(w);
+  for (let i = 0; i < 3; i++) { settle(w); assert.ok(until(() => w.idle())); }
+  assert.equal(w.calls().filter((c) => /compare/.test(c.a.join(' '))).length, 1);
+  assert.deepEqual(w.lines(), ['o/r#5 round failed: internal']);
+  assert.equal(w.notifications().length, 1);
+});
+
+test('review finding: the user\'s invocation lifts the hold at the cap even when it is itself capped', () => {
+  const w = watched();
+  const recent = (i) => new Date(Date.now() - (i + 1) * 600e3).toISOString();
+  w.update((v) => { for (let i = 0; i < 6; i++) v.reviews.push(stateReview(w, { round: 6 - i }, { at: recent(i) })); });
+  w.push({ 'a.js': 'one\ntwo\nbad line\nthree\nfour\n' });
+  entry(w);
+  settle(w);
+  assert.ok(until(() => w.lines().some((l) => / question cap /.test(l)) && w.idle()));
+  const r = w.sh(['round', 'o/r', '5', '--harness', 'claude']);
+  assert.equal(r.out[0].ask, 'cap');
+  assert.equal(w.lines().filter((l) => / question cap /.test(l)).length, 1, 'still listed: still unanswered');
+  // Once the window passes, the watcher runs again without another invocation.
+  w.update((v) => { for (const x of v.reviews) x.submittedAt = new Date(Date.now() - 25 * 3600e3).toISOString(); });
+  w.push({ 'a.js': 'one\ntwo\nbad line\nthree\nfive\n' });
+  settle(w);
+  assert.ok(until(() => reviews(w).length === 7 && w.idle()), 'a round published');
+  assert.deepEqual(w.lines().filter((l) => / question cap /.test(l)), []);
+});
+
+test('review finding: answering one of two asked findings leaves a line for the other; a refused decision answers nothing', () => {
+  const w = watched();
+  w.update((v) => { v.reviews.push(stateReview(w, { findings: [finding(w, { status: 'asked' }), finding(w, { key: '1.2', status: 'asked' })] })); v.pr.labels.nodes = [{ name: 'review-blocked' }]; });
+  entry(w);
+  w.check();
+  assert.deepEqual(w.lines(), ['o/r#5 question asked 1.1,1.2 https://github.com/o/r/pull/5']);
+  // A decision GitHub refuses answers nothing.
+  w.update((v) => { v.fail = [{ match: 'issues/5/comments', status: '502', times: 1 }]; });
+  assert.equal(w.sh(['decide', 'o/r', '5', '1.1', 'waive', '--reason', 'Fine.', '--harness', 'claude']).out[0].reason, 'submission');
+  assert.deepEqual(w.lines(), ['o/r#5 question asked 1.1,1.2 https://github.com/o/r/pull/5']);
+  w.sh(['decide', 'o/r', '5', '1.1', 'waive', '--reason', 'Fine.', '--harness', 'claude']);
+  assert.deepEqual(w.lines(), ['o/r#5 question asked 1.2 https://github.com/o/r/pull/5']);
+  w.check();
+  assert.deepEqual(w.lines(), ['o/r#5 question asked 1.2 https://github.com/o/r/pull/5']);
+  assert.equal(w.notifications().length, 1, 'the session\'s own question is not notified');
+});
+
+test('review finding: watch add refuses the account\'s own pull request and one it cannot read; a corrupt notice record reads as deleted', () => {
+  const own = watched({ author: 'rev' });
+  assert.deepEqual(own.sh(['watch', 'add', 'o/r', '5', '--harness', 'claude']).out, [{ event: 'error', reason: 'author' }]);
+  assert.deepEqual(own.list(), {});
+  const hidden = watched({ unreadable: true });
+  assert.deepEqual(hidden.sh(['watch', 'add', 'o/r', '5', '--harness', 'claude']).out, [{ event: 'question', ask: 'account' }]);
+  assert.deepEqual(hidden.list(), {});
+  assert.equal(hidden.watcher(), null);
+  // An entry the account cannot read any more asks which account to use; it is not a failed check.
+  entry(hidden);
+  assert.equal(hidden.check().status, 0);
+  assert.deepEqual(hidden.lines(), ['o/r#5 question account']);
+  const w = watched();
+  w.update((v) => { v.reviews.push(stateReview(w, {})); v.pr.isDraft = true; });
+  entry(w);
+  for (const bad of ['5', '[]']) {
+    fs.mkdirSync(path.join(w.data, 'notices'), { recursive: true });
+    fs.writeFileSync(path.join(w.data, 'notices', 'o__r__5__rev.json'), bad);
+    assert.equal(w.check().status, 0, bad);
+    assert.equal(w.check().status, 0, bad);
+    assert.ok(runtime.readJson(path.join(w.data, 'notices', 'o__r__5__rev.json'), null).view, bad);
+  }
+});

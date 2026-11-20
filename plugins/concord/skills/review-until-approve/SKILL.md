@@ -48,7 +48,8 @@ Each line is one JSON object. Say one line per event to the user:
 
 `watch add` puts the pull request on the watch list with the account `gh` is logged in as and the harness, model, and effort, and starts the background watcher unless it runs. Say what it prints:
 
-- `watching` with `pr`: the pull request is on the list.
+- `watching` with `pr`: the pull request is on the list; `checked` is when the watcher last checked it.
+- `question` with `ask: account`, or `error` with `reason: author`: the account cannot read the pull request, or wrote it. Nothing was added; handle it as under Questions or `error`, and skip `round`.
 - `watcher` with `started: true`: the watcher was started; `running: true`: it was already running. Both mean that rounds now run without a session.
 - `watcher` with `reason: probe`: the state directory or GitHub could not be reached from here (a harness sandbox), so nothing was added or started. Give the user the same `watch add` command, with the `scripts/` directory resolved, to run in a terminal.
 
@@ -60,7 +61,7 @@ The watcher checks every five minutes with `gh` and no model. A push, a reply, o
 - `round failed: <reason>`: a round posted nothing (reasons as under `failed` above). The watcher waits for something new; invoking the skill retries at once.
 - `merged; no longer watched`, `closed; no longer watched`: the pull request left the list.
 - `review-blocked label restored`: the label was removed while a blocker is open, and the watcher added it back.
-- `question <ask> ...`: a question, as under Questions; `question account <login>` means `gh` is now logged in as another account than `<login>`, the account the pull request was added with, so the watcher skips it until that account is back or the user invokes the skill as the account they want. Ask the user. A question line stays pending until it is answered: by `decide`, by a round that settles it, or by the user's next invocation on that pull request. `watch status` marks every other line shown.
+- `question <ask> ...`: a question, as under Questions; `question account <login>` means `gh` is now logged in as another account than `<login>`, the account the pull request was added with, so the watcher skips it until that account is back or the user invokes the skill as the account they want. Ask the user. A question line stays pending until it is answered: by `decide`, or by a check or round that no longer finds it; `cap`, `agent-cannot-start`, `hook-did-not-run`, `account`, and `overflow` are answered by the user's next invocation on that pull request, which also lets the watcher run past the daily cap again. Questions a round in the session prints are listed too, without a notification. `watch status` marks every other line shown.
 
 When a session starts with `review-until-approve:` lines, or says the watcher is not running, run `watch status` and relay it; invoking the skill on a pull request starts the watcher again.
 

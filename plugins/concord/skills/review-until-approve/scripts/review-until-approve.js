@@ -349,6 +349,12 @@ function questions(repo, view, f) {
   return out;
 }
 
+// Prints every question the state raises, and notes that it did: only then does the run settle the listed ones.
+function askAll(ctx, repo, view, f) {
+  for (const q of questions(repo, view, f)) print(q);
+  ctx.askedAll = true;
+}
+
 const tally = (state) => ({
   open: state.findings.filter((x) => x.status === 'open').length,
   asked: state.findings.filter((x) => x.status === 'asked').length,
@@ -357,13 +363,18 @@ const tally = (state) => ({
 
 // ---- local records --------------------------------------------------------------------------------------------------
 
-const slug = (repo, n, login) => `${repo.replace('/', '__')}__${n}__${login}`;
+// A pull request as the lock, the notice record, and the notice lines name it: GitHub names are case-insensitive.
+const slug = (repo, n, login) => `${repo.toLowerCase().replace('/', '__')}__${Number(n)}__${login}`;
+const tagOf = (repo, n) => `${repo.toLowerCase()}#${Number(n)}`;
 // The notice record per pull request and account: the failed-round counter (`failed`, times of failed rounds), the
 // previous check's view (`view`, its signature and since when), the last check's time (`checked`), the view at which a
-// watcher round failed or stopped (`held`), and the question lines already in the notice list (`noticed`). Written
-// only under the pull request's lock. Deleting it at most delays a check, repeats a round or a notice, or resets the
-// failed-round count.
-const readRecord = (dir, id) => readJson(path.join(dir, 'notices', `${id}.json`), null) || {};
+// watcher round failed or stopped (`held`), whether the watcher stopped at the daily cap (`capHeld`, cleared by the
+// user's next invocation), and the question lines already in the notice list (`noticed`). Deleting it at most delays
+// a check, repeats a round or a notice, or resets the failed-round count; one that is not an object reads as deleted.
+function readRecord(dir, id) {
+  const rec = readJson(path.join(dir, 'notices', `${id}.json`), null);
+  return rec && typeof rec === 'object' && !Array.isArray(rec) ? rec : {};
+}
 const writeRecord = (dir, id, rec) => writeAtomic(path.join(ownerDir(path.join(dir, 'notices')), `${id}.json`), JSON.stringify(rec));
 function failedRounds(dir, id) {
   const rec = readRecord(dir, id);
@@ -389,40 +400,54 @@ function noticeText(pr, l) {
 // Lines that report an action that needs nothing from the user; every other line counts toward a notification.
 const INFORMATIONAL = /^\S+ (reviewed round|review-blocked label restored)/;
 // Reconciles one pull request's question lines with the questions that hold now: a pending line of the given kinds
-// whose question no longer holds is marked shown, and a question not yet in the list is added (or, from the user's
-// session, which relays it itself, only recorded). Returns how many lines it added.
-function reconcile(base, rec, pr, current, kinds, add) {
+// whose question no longer holds is marked shown, and a question not yet in the list is added, so that a question
+// stays pending until it is answered. Returns how many lines it added.
+function reconcile(base, rec, pr, current, kinds) {
   const stale = (t) => t.startsWith(`${pr} question `) && kinds.includes(t.split(' ')[2]) && !current.includes(t);
   markShown(pendingNotices(base, SKILL).filter((x) => stale(x.line)));
   rec.noticed = (Array.isArray(rec.noticed) ? rec.noticed : []).filter((t) => !stale(t));
   let added = 0;
   for (const t of current.filter((x) => !rec.noticed.includes(x))) {
     rec.noticed.push(t);
-    if (add) { addNotice(base, SKILL, t); added++; }
+    addNotice(base, SKILL, t);
+    added++;
   }
   return added;
 }
 const notifyCount = (n) => { if (n) notify(`${SKILL}: ${n} new notice${n === 1 ? '' : 's'}`); };
 
-// What a round or decision printed, into the notice record and, for a round the watcher started, the notice list.
-// The watcher holds the pull request at the view the round read when it failed or stopped on a question it cannot
-// answer itself; an invocation by the user does not read the hold.
+// Whether the pull request is still on the watch list with the account the round runs as. A round the watcher
+// started checks it before it starts and before it posts, so the user's stop ends the watcher's rounds.
+function watched(ctx) {
+  const e = runtime.readWatch(ctx.data).entries?.[tagOf(ctx.repo, ctx.n)];
+  return Boolean(e) && e.login === ctx.login;
+}
+
+// What a round or decision printed, under the pull request's lock, into the notice record and the notice list.
+// From the user's session, the questions it printed are listed (the session relays them too, so nothing is notified),
+// and lines its answers settled go; the invocation also lifts the hold at the daily cap. From the watcher, its lines are
+// listed and notified, and the watcher holds the pull request at the view the round read when it failed or stopped on
+// a question it cannot answer itself; an invocation by the user does not read that hold.
 function recordRun(ctx, fromWatcher) {
   if (!ctx.view || PRINTED.some((l) => l.event === 'locked')) return;
+  if (fromWatcher && !watched(ctx)) return;
   const base = runtime.baseDir(ctx.harness);
-  const pr = `${ctx.repo}#${ctx.n}`;
+  const pr = tagOf(ctx.repo, ctx.n);
   const rec = readRecord(ctx.data, ctx.id);
   const asked = PRINTED.filter((l) => l.event === 'question').map((q) => questionText(pr, q, ctx.view.head));
   if (!fromWatcher) {
-    if (!PRINTED.some((l) => l.event === 'error') && !process.exitCode) reconcile(base, rec, pr, asked, ASKS, false);
+    delete rec.capHeld;
+    // A run that stopped before printing what the state asks settles only the questions an invocation answers.
+    if (!PRINTED.some((l) => l.event === 'error') && !process.exitCode) reconcile(base, rec, pr, asked, ctx.askedAll ? ASKS : [...HOLD, 'overflow']);
   } else {
     let notable = 0;
     for (const t of PRINTED.map((l) => noticeText(pr, l)).filter(Boolean)) {
       addNotice(base, SKILL, t);
       if (!INFORMATIONAL.test(t)) notable++;
     }
-    notable += reconcile(base, rec, pr, asked, HOLD, true);
+    notable += reconcile(base, rec, pr, asked, [...HOLD, 'overflow']);
     if (PRINTED.some((l) => ['failed', 'error'].includes(l.event) || (l.event === 'question' && HOLD.includes(l.ask)))) rec.held = sigOf(ctx.view);
+    if (PRINTED.some((l) => l.event === 'question' && l.ask === 'cap')) rec.capHeld = true;
     notifyCount(notable);
   }
   writeRecord(ctx.data, ctx.id, rec);
@@ -624,6 +649,7 @@ function publishCarried(ctx, { carried = false, head }) {
 // Composes, scans, and submits one review, then settles threads and the label. Approval is decided on a fresh read.
 function publish(ctx, { state, prev, texts, place, unverified, newKeys = [], carried = false }) {
   const { repo, n, login, f } = ctx;
+  if (ctx.fromWatcher && !watched(ctx)) return [{ event: 'unwatched', pr: tagOf(repo, n) }];
   const live = readMeta(repo, n, login);
   const make = (where, approve) => compose({ state, prev, texts, place: where, threads: f.threads, unverified, newKeys, carried, approve });
   let review = make(place, false);
@@ -905,7 +931,7 @@ function begin(repo, n, opts) {
     print({ event: 'question', ask: 'account' });
     return null;
   }
-  return { repo, n, harness, data, login, id: slug(repo, n, login) };
+  return { repo, n, harness, data, login, id: slug(repo, n, login), fromWatcher: opts.from === 'watcher' };
 }
 function readView(ctx) {
   try {
@@ -966,13 +992,14 @@ function stateVerb(ctx) {
   const p = pendingOf(ctx.repo, view, f, ctx.login);
   const cond = approval({ state: f.state, live: view, login: ctx.login, unreadable: f.unreadable, approvedHeads: approvedHeads(view) });
   print({ event: 'state', pending: p.pending, approvable: cond.approve, why: cond.why, ...(f.state && { round: f.state.round, head: f.state.head, ...tally(f.state) }), link: view.url });
-  for (const q of questions(ctx.repo, view, f)) print(q);
+  askAll(ctx, ctx.repo, view, f);
 }
 
 async function roundVerb(ctx, opts) {
   ctx.model = opts.model;
   ctx.effort = opts.effort;
   if (opts.language !== undefined && !/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(opts.language)) return refuse('--language must be a BCP 47 tag such as ko or en');
+  if (ctx.fromWatcher && !watched(ctx)) return print({ event: 'unwatched', pr: tagOf(ctx.repo, ctx.n) });
   if (!readView(ctx)) return;
   const { repo, n, view, login } = ctx;
   if (ended(view)) return;
@@ -992,7 +1019,7 @@ async function roundVerb(ctx, opts) {
         settle(repo, n, view, f, f.state, f.base?.url, f.state);
         print({ event: 'nothing', approvable: false, why: cond.why, round: f.state.round, head: f.state.head, ...tally(f.state), link: view.url });
       }
-      for (const q of questions(repo, view, f)) print(q);
+      askAll(ctx, repo, view, f);
       return;
     }
     ctx.gitDir = work.gitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rua-git-'));
@@ -1010,7 +1037,7 @@ async function roundVerb(ctx, opts) {
     // A base merge: the last reviewed head is an ancestor, nothing else is pending, and the diff is the same.
     if (ancestor && pending.length === 1 && pending[0] === 'head' && patchId(ctx.gitDir, s.mergeBase, s.head) === patchId(ctx.gitDir, ctx.mergeBase, view.head)) {
       for (const l of publishCarried(ctx, { carried: true, head: view.head })) print(l);
-      for (const q of questions(repo, view, f)) print(q);
+      askAll(ctx, repo, view, f);
       return;
     }
     // The daily cap counts rounds that ran an agent: published ones from the state reviews, failed ones locally.
@@ -1053,7 +1080,7 @@ async function roundVerb(ctx, opts) {
     if (out[0].event === 'failed') countFailed(ctx.data, ctx.id);
     for (const l of out) print(l);
     const after = { ...f, state: next.state };
-    for (const q of questions(repo, view, after)) print(q);
+    askAll(ctx, repo, view, after);
   } finally {
     for (const d of [ctx.roundDir, ctx.work, work.gitDir]) if (d) fs.rmSync(d, { recursive: true, force: true });
   }
@@ -1090,13 +1117,12 @@ function decideVerb(ctx, pos, opts) {
   const cond = approval({ state: g.state, live: ctx.view, login, unreadable: g.unreadable, approvedHeads: approvedHeads(ctx.view) });
   if (cond.approve) for (const l of publishCarried(ctx, {})) print(l);
   else label(repo, n, ctx.view, blocking(g.state).length > 0 || g.unreadable);
-  for (const q of questions(repo, ctx.view, g)) print(q);
+  askAll(ctx, repo, ctx.view, g);
 }
 
 // ---- waiting --------------------------------------------------------------------------------------------------------
 
 const interval = () => (Number(process.env.CONCORD_WATCH_INTERVAL) || 300) * 1000;
-const entryKey = (repo, n) => `${repo.toLowerCase()}#${Number(n)}`;
 const NAME = /^[A-Za-z0-9][\w.:[\]-]{0,99}$/;
 
 // watch add: the pull request goes on the watch list with the account gh is logged in as and the harness, model, and
@@ -1113,8 +1139,15 @@ function watchAdd(harness, repo, n, opts) {
     login = lower(ghJson(['api', 'user']).login);
   } catch { /* below */ }
   if (!login) return print({ event: 'watcher', running: Boolean(data) && runtime.watcherRunning(data), started: false, reason: 'probe' });
-  runtime.updateWatch(data, (list) => { list.entries[entryKey(repo, n)] = { repo, n: Number(n), login, harness, model: opts.model ?? null, effort: opts.effort ?? null }; });
-  print({ event: 'watching', pr: `${repo}#${Number(n)}` });
+  // Only a pull request the account can read and did not write goes on the list.
+  let meta;
+  try { meta = readMeta(repo, n, login); } catch (e) {
+    return print(e instanceof GhError && e.notFound ? { event: 'question', ask: 'account' } : { event: 'error', reason: 'github' });
+  }
+  if (meta.author === login) return print({ event: 'error', reason: 'author' });
+  runtime.updateWatch(data, (list) => { list.entries[tagOf(repo, n)] = { repo, n: Number(n), login, harness, model: opts.model ?? null, effort: opts.effort ?? null }; });
+  const { checked } = readRecord(data, slug(repo, n, login));
+  print({ event: 'watching', pr: tagOf(repo, n), ...(FIELDS.checked(checked) && { checked }) });
   const was = runtime.watcherRunning(data);
   if (!was) runtime.startDetached(__filename, ['watcher', '--harness', harness]);
   print({ event: 'watcher', running: was, started: !was });
@@ -1123,8 +1156,8 @@ function watchAdd(harness, repo, n, opts) {
 // watch remove: the user's stop. The entry and its pending lines go; nothing is posted.
 function watchRemove(harness, repo, n) {
   const data = ensureDataDir(SKILL, harness);
-  const gone = runtime.updateWatch(data, (list) => { const en = list.entries[entryKey(repo, n)]; delete list.entries[entryKey(repo, n)]; return en; });
-  const pr = gone ? `${gone.repo}#${gone.n}` : `${repo}#${Number(n)}`;
+  runtime.updateWatch(data, (list) => { delete list.entries[tagOf(repo, n)]; });
+  const pr = tagOf(repo, n);
   markShown(pendingNotices(runtime.baseDir(harness), SKILL).filter((x) => x.line.startsWith(`${pr} `)));
   print({ event: 'unwatched', pr });
 }
@@ -1136,7 +1169,7 @@ function watchStatus(harness) {
   print({ event: 'watcher', running: runtime.watcherRunning(data) });
   for (const e of Object.values(runtime.readWatch(data).entries)) {
     const { checked } = readRecord(data, slug(e.repo, e.n, e.login));
-    print({ event: 'watching', pr: `${e.repo}#${e.n}`, ...(FIELDS.checked(checked) && { checked }) });
+    print({ event: 'watching', pr: tagOf(e.repo, e.n), ...(FIELDS.checked(checked) && { checked }) });
   }
   const pending = pendingNotices(runtime.baseDir(harness), SKILL);
   for (const x of pending) if (FIELDS.notice(x.line)) print({ event: 'notice', notice: x.line });
@@ -1166,19 +1199,25 @@ function checkVerb(harness) {
   let notable = 0;
   let next = null;
   for (const [key, e] of entries) {
-    const pr = `${e.repo}#${e.n}`;
+    const pr = tagOf(e.repo, e.n);
     const id = slug(e.repo, e.n, e.login);
-    const lock = path.join(ownerDir(path.join(data, 'locks')), `${id}.lock`);
-    if (!takeLock(lock)) continue;
+    // A pull request a round or decision is working on is left alone. The check takes no lock itself, so the user's
+    // own round never finds one the check holds.
+    if (running(readJson(path.join(data, 'locks', `${id}.lock`), null))) continue;
     const rec = readRecord(data, id);
     try {
       rec.checked = new Date().toISOString();
       if (login !== e.login) {
-        notable += reconcile(base, rec, pr, [`${pr} question account ${e.login}`], [], true);
+        notable += reconcile(base, rec, pr, [`${pr} question account ${e.login}`], []);
         continue;
       }
       let view;
-      try { view = readAll(e.repo, e.n, login); } catch { failed = true; continue; }
+      try { view = readAll(e.repo, e.n, login); } catch (err) {
+        // The account cannot read it: the user is asked which account to use. Anything else is a failed check.
+        if (err instanceof GhError && err.notFound) notable += reconcile(base, rec, pr, [`${pr} question account`], []);
+        else failed = true;
+        continue;
+      }
       if (view.state !== 'OPEN') {
         runtime.updateWatch(data, (list) => { delete list.entries[key]; });
         markShown(pendingNotices(base, SKILL).filter((x) => x.line.startsWith(`${pr} `)));
@@ -1193,18 +1232,19 @@ function checkVerb(harness) {
           addNotice(base, SKILL, `${pr} review-blocked label restored`);
         } catch { /* an account without write access cannot set it */ }
       }
-      notable += reconcile(base, rec, pr, questions(e.repo, view, f).map((q) => questionText(pr, q)), ['asked', 'unreadable', 'submodule', 'account'], true);
+      notable += reconcile(base, rec, pr, questions(e.repo, view, f).map((q) => questionText(pr, q)), ['asked', 'unreadable', 'submodule', 'account']);
       const sig = sigOf(view);
+      // Held: a watcher round failed on this view, or the watcher stopped at the daily cap and nothing runs until the
+      // user invokes the skill.
       if (rec.view?.sig !== sig) rec.view = { sig, since: Date.now() };
-      else if (next) continue;
+      else if (next || rec.held === sig || rec.capHeld) continue;
       else if (pendingOf(e.repo, view, f, login).pending.length) {
-        // Past the daily cap, nothing runs until the user invokes the skill, which answers the question.
-        const capped = rec.noticed?.some((t) => t.startsWith(`${pr} question cap `));
-        if (Date.now() - rec.view.since >= interval() && rec.held !== sig && !capped) next = e;
+        if (Date.now() - rec.view.since >= interval()) next = e;
       } else if (approval({ state: f.state, live: view, login, unreadable: f.unreadable, approvedHeads: approvedHeads(view) }).approve) next = e;
     } finally {
-      writeRecord(data, id, rec);
-      releaseLock(lock);
+      // Only the fields a check owns are written over a fresh read, so a round or decision that wrote meanwhile loses nothing.
+      const { view, checked, noticed } = rec;
+      writeRecord(data, id, { ...readRecord(data, id), view, checked, noticed });
     }
   }
   if (next && !roundRunning(data)) {
@@ -1242,7 +1282,16 @@ async function main(argv) {
   if (!ctx) return;
   if (verb === 'state') return stateVerb(ctx);
   if (verb === 'decide') return withLock(ctx, () => { decideVerb(ctx, pos, opts); recordRun(ctx, false); });
-  return withLock(ctx, async () => { await roundVerb(ctx, opts); recordRun(ctx, opts.from === 'watcher'); });
+  return withLock(ctx, async () => {
+    // A round that throws is recorded like a failed one, so that the watcher holds it and the user hears of it.
+    try { await roundVerb(ctx, opts); } catch (e) {
+      log('crash', e && e.stack);
+      if (ctx.work) countFailed(ctx.data, ctx.id);
+      print({ event: 'error', reason: 'internal' });
+      process.exitCode = 1;
+    }
+    recordRun(ctx, ctx.fromWatcher);
+  });
 }
 
 if (require.main === module) {
