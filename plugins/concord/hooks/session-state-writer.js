@@ -7,8 +7,8 @@ const { readStdinEvent } = require('../adapters/claude-code/event');
 const { extractFacts, extractRationale, extractRationaleText } = require('../core/extract');
 const { emptyModel, mergeModel } = require('../core/state');
 const { writeNorthStarIfAbsent, firstSubstantiveUserMessage, readNorthStar } = require('../core/charter');
-const { readMode } = require('../core/read-only');
-const { dataDir } = require('../runtime/data-dir');
+const { readMode, confinedCwd } = require('../core/read-only');
+const { dataDir, sessionRoot } = require('../runtime/data-dir');
 
 // A session in explain-pr's read-only mode has read a pull request written by someone else: nothing it says is
 // carried into later sessions. A mode file that cannot be read counts as the mode.
@@ -20,11 +20,25 @@ function inReadOnlyMode(sid) {
   }
 }
 
+// A confined agent or headless session a script started: its mode file is of a confined kind, or its working directory
+// is a confined one. Nothing of it is harvested.
+function confined(sid) {
+  const dir = dataDir('explain-pr', 'claude');
+  if (confinedCwd(process.cwd(), { sessionRoot: sessionRoot('claude'), prsRoot: path.join(dir, 'prs') })) return true;
+  try {
+    const mode = readMode(dir, sid);
+    return mode !== null && mode.kind !== 'read';
+  } catch {
+    return false; // an unreadable mode file is treated as explain-pr's reading mode, which harvests nothing either
+  }
+}
+
 function main() {
   const { sessionId, transcriptPath, lastAssistantMessage } = readStdinEvent('stop');
   if (!sessionId || !transcriptPath) return;
 
   const sid = path.basename(String(sessionId));
+  if (confined(sid)) return;
   const stateDir = path.join(path.dirname(transcriptPath), 'state');
   fs.mkdirSync(stateDir, { recursive: true });
   const jsonPath = path.join(stateDir, `${sid}.json`);

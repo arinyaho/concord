@@ -265,7 +265,20 @@ function decideCodex(event, { prsRoot, allowedTools, sessionRoot }) {
   return { allow: false, reason: agent ? CONFINED_REASON('agent') : DENY_REASON(prsRoot) };
 }
 
+// A session a script started confined: its working directory is under pr-to-merge's session-worktree root, or in a
+// round directory under explain-pr's prs/ that holds the confined-agent marker. It read text others wrote, so the state
+// hooks harvest and print nothing there.
+function confinedCwd(cwd, { sessionRoot, prsRoot }) {
+  if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) return false;
+  const sessions = realOrNull(sessionRoot);
+  if (sessions !== null && within(cwd, sessions)) return true;
+  const prs = realOrNull(prsRoot);
+  if (prs === null || !within(cwd, prs)) return false;
+  const round = path.relative(prs, resolveReal(cwd)).split(path.sep)[0];
+  return Boolean(round) && fs.existsSync(path.join(prs, round, AGENT_MARKER));
+}
+
 module.exports = {
   readMode, writeMode, removeMode, readAllowedTools, allToolNames,
-  decideClaude, decideCodex, DENY_REASON, CONFINED_REASON, AGENT_MARKER,
+  decideClaude, decideCodex, confinedCwd, DENY_REASON, CONFINED_REASON, AGENT_MARKER,
 };

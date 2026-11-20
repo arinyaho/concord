@@ -4,6 +4,12 @@ const path = require('node:path');
 const { readStdinEvent } = require('../engine/event');
 const { readNorthStar, mergeSessions, renderCharter } = require('../engine/charter');
 const { resolveStateDirFromCwd } = require('../engine/statedir');
+const { confinedCwd } = require('../engine/read-only');
+const { dataDir, sessionRoot } = require('../runtime/data-dir');
+
+// A confined agent or headless session a script started: its working directory is under pr-to-merge's
+// session-worktree root or in a marked round directory. Codex loads this plugin's hooks there too; they do nothing.
+const confined = (cwd) => confinedCwd(cwd || process.cwd(), { sessionRoot: sessionRoot('codex'), prsRoot: path.join(dataDir('explain-pr', 'codex'), 'prs') });
 
 const CONVENTION =
   'Tag durable decisions and open items inline so a hook can persist them across sessions: ' +
@@ -19,7 +25,8 @@ function withNotices(context) {
 }
 
 function main() {
-  const { sessionId, transcriptPath } = readStdinEvent();
+  const { sessionId, transcriptPath, cwd } = readStdinEvent();
+  if (confined(cwd)) return;
   if (!transcriptPath) {
     process.stdout.write(withNotices(''));
     return;

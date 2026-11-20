@@ -3,8 +3,8 @@
 const path = require('node:path');
 const { readStdinEvent } = require('../adapters/claude-code/event');
 const { readNorthStar, mergeSessions, renderCharter, catchUpSessions } = require('../core/charter');
-const { readMode } = require('../core/read-only');
-const { dataDir } = require('../runtime/data-dir');
+const { readMode, confinedCwd } = require('../core/read-only');
+const { dataDir, sessionRoot } = require('../runtime/data-dir');
 
 // A session in explain-pr's read-only mode has read a pull request; its transcript is never folded into the state.
 function inReadOnlyMode(sid) {
@@ -12,6 +12,18 @@ function inReadOnlyMode(sid) {
     return readMode(dataDir('explain-pr', 'claude'), sid) !== null;
   } catch {
     return true;
+  }
+}
+
+// A confined agent or headless session a script started (see session-state-writer.js): nothing is printed to it.
+function confined(sid) {
+  const dir = dataDir('explain-pr', 'claude');
+  if (confinedCwd(process.cwd(), { sessionRoot: sessionRoot('claude'), prsRoot: path.join(dir, 'prs') })) return true;
+  try {
+    const mode = readMode(dir, sid);
+    return mode !== null && mode.kind !== 'read';
+  } catch {
+    return false; // an unreadable mode file is treated as explain-pr's reading mode, which harvests nothing either
   }
 }
 
@@ -30,6 +42,7 @@ function withNotices(context) {
 
 function main() {
   const { sessionId, transcriptPath } = readStdinEvent();
+  if (confined(path.basename(String(sessionId || '')))) return;
   if (!transcriptPath) {
     process.stdout.write(withNotices(''));
     return;
