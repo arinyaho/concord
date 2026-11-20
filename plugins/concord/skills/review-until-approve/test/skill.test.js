@@ -53,5 +53,7 @@ test('both requests mark the round directory as untrusted data and the notes as 
   }
   assert.match(verifier, /\{\{RESULT\}\}/);
   assert.match(verifier, /Every claim that the code settles something needs a span that occurs in the head; without one, the verdict is `asked`/);
-  assert.match(reviewer, /You cannot run any command/);
+  assert.match(reviewer, /You run nothing the pull request provides/);
+  assert.match(verifier, /You run nothing the pull request provides/);
+  for (const t of [reviewer, verifier]) assert.match(t, /Under Codex, read with read-only shell commands/);
 });

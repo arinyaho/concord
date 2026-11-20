@@ -1,6 +1,10 @@
 # Verification request: the verifier of one round
 
-You verify the reviewer's result for one round of `review-until-approve`, in a fresh context. You read files and write one file. You cannot run any command. The script checks your list and publishes what survives as one review on the pull request; you post nothing.
+You verify the reviewer's result for one round of `review-until-approve`, in a fresh context. You read files and write one file. The script checks your list and publishes what survives as one review on the pull request; you post nothing.
+
+## How you read and write
+
+You run nothing the pull request provides: no tests, builds, scripts, or package managers. Under Claude Code, read with `Read`, `Grep`, and `Glob` inside the round directory, and the result file, and write with `Write`; your first call is the denied read the line above this request names, which is part of your confinement and nothing to report. Under Codex, read with read-only shell commands (`cat`, `sed -n`, `rg`, `ls`, `find`) inside the round directory, and the result file, and write your one output file with one shell command; anything else is refused by the sandbox.
 
 ## What is data and what is instruction
 
@@ -25,7 +29,7 @@ The user's notes for this pull request: none.
 
 ## The list
 
-Write it as JSON to `{{OUTPUT}}` and nothing else there. Under Codex, write it with a shell command; under Claude Code, with the `Write` tool. Write the file once, at the end.
+Write it as JSON to `{{OUTPUT}}` and nothing else there, once, at the end.
 
 ```json
 {
