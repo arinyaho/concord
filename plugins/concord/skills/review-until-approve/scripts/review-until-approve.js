@@ -8,6 +8,7 @@
 //        review-until-approve.js decide <owner/repo> <n> <key> keep|waive|blocker|minor --reason <text>
 //        review-until-approve.js decide <owner/repo> <n> submodule:<path> accept --reason <text>
 //        review-until-approve.js decide <owner/repo> <n> continue|start-over --reason <text>
+//        review-until-approve.js notes <owner/repo> <n> [-] [--store gist|repo:OWNER/NAME]   (- reads the complete set on stdin)
 //        review-until-approve.js watch add|remove <owner/repo> <n> [--harness claude|codex] [--model m] [--effort e]
 //        review-until-approve.js watch status [--harness claude|codex]
 //        review-until-approve.js check|watcher --harness claude|codex   (one check; the watcher loop, which watch add starts)
@@ -38,9 +39,14 @@ const REQUESTS = path.join(__dirname, '..', 'references');
 
 // ---- output: the fixed vocabulary -----------------------------------------------------------------------------------
 
-const ASKS = ['asked', 'unreadable', 'submodule', 'agent-cannot-start', 'hook-did-not-run', 'cap', 'account', 'overflow'];
+const NOTES_ASKS = ['notes-store', 'notes-unusable'];
+const ASKS = ['asked', 'unreadable', 'submodule', 'agent-cannot-start', 'hook-did-not-run', 'cap', 'account', 'overflow', ...NOTES_ASKS];
+// Why a notes store cannot be used: no gist scope, the repository missing or not readable, owned by another account,
+// not private, shared with another collaborator, publishing a GitHub Pages site, a stored file that does not parse, or
+// notes only in the cache.
+const PROBLEMS = ['scope', 'missing', 'owner', 'visibility', 'collaborator', 'pages', 'format', 'unsaved'];
 const REASONS = ['reviewer-output', 'verifier-list', 'prepare', 'submission', 'refused', 'author', 'github', 'reason-refused', 'internal', 'probe'];
-const PENDING = ['first', 'head', 'reply', 'description', 'start-over'];
+const PENDING = ['first', 'head', 'reply', 'description', 'notes', 'start-over'];
 const WHY = ['closed', 'head-moved', 'draft', 'author', 'blocker', 'unreadable', 'submodule', 'approved', 'overflow'];
 const sha = (v) => typeof v === 'string' && HEX.test(v);
 const count = (v) => Number.isInteger(v) && v >= 0;
@@ -49,8 +55,9 @@ const listOf = (ok) => (v) => Array.isArray(v) && v.every(ok);
 const link = (v) => typeof v === 'string' && /^https:\/\/[\w.-]+\/[\w.-]+\/[\w.-]+\/pull\/\d+(#[\w-]+)?$/.test(v);
 const keyish = (v) => typeof v === 'string' && KEY.test(v);
 const FIELDS = {
-  event: oneOf(['state', 'nothing', 'published', 'superseded', 'locked', 'failed', 'question', 'decided', 'closed', 'merged', 'error', 'watching', 'unwatched', 'watcher', 'notice']),
-  ask: oneOf(ASKS), reason: oneOf(REASONS), pending: listOf(oneOf(PENDING)), why: listOf(oneOf(WHY)),
+  event: oneOf(['state', 'nothing', 'published', 'superseded', 'locked', 'failed', 'question', 'decided', 'closed', 'merged', 'error', 'watching', 'unwatched', 'watcher', 'notice', 'notes']),
+  ask: oneOf(ASKS), reason: oneOf(REASONS), pending: listOf(oneOf(PENDING)), why: listOf(oneOf(WHY)), problem: oneOf(PROBLEMS),
+  saved: (v) => typeof v === 'boolean', empty: (v) => typeof v === 'boolean', duplicates: count,
   review: oneOf(['APPROVE', 'COMMENT']), decision: oneOf([...DECISIONS, 'accept', 'continue', 'start-over']),
   agents: (v) => typeof v === 'boolean', approvable: (v) => typeof v === 'boolean', carried: (v) => typeof v === 'boolean',
   head: sha, link, keys: listOf(keyish), key: keyish,
@@ -82,24 +89,27 @@ function log(what, detail) {
 }
 
 class GhError extends Error {
-  constructor(args, stderr) {
+  constructor(args, stderr, quiet) {
     super('gh failed');
     const m = /HTTP (\d{3})/.exec(stderr || '');
     this.status = m ? m[1] : null;
     this.notFound = /HTTP (403|404)|Could not resolve to a (Repository|PullRequest)|NOT_FOUND|FORBIDDEN/.test(stderr || '');
-    log(`gh ${args.slice(0, 3).join(' ')}`, stderr);
+    // A call to the notes store logs only its status: the call and GitHub's message can name the store.
+    if (quiet) log('gh notes store', `HTTP ${this.status || 'error'}`);
+    else log(`gh ${args.slice(0, 3).join(' ')}`, stderr);
   }
 }
 // GitHub reads and writes call gh directly from a neutral directory; the round's prepared checkout is never a cwd.
-function gh(args, input) {
+// `quiet` is for calls to the notes store.
+function gh(args, input, quiet) {
   const r = spawnSync('gh', args, {
     cwd: os.tmpdir(), input, encoding: 'utf8', maxBuffer: 1 << 30, timeout: 300000, stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, GH_PROMPT_DISABLED: '1' },
   });
-  if (r.error || r.status !== 0) throw new GhError(args, r.stderr || String(r.error));
+  if (r.error || r.status !== 0) throw new GhError(args, r.stderr || String(r.error), quiet);
   return r.stdout;
 }
-const ghJson = (args, input) => JSON.parse(gh(args, input));
+const ghJson = (args, input, quiet) => JSON.parse(gh(args, input, quiet));
 const post = (url, payload, method = 'POST') => ghJson(['api', '-X', method, url, '--input', '-'], JSON.stringify(payload));
 
 // git runs in the script's own clone, through the spawn helper, with the round directory excluded from its lookup.
@@ -307,18 +317,21 @@ const seenOf = (view) => ({
   review: Math.max(0, ...view.threads.flatMap((t) => (t.comments?.nodes || []).map((c) => c.databaseId || 0))),
 });
 
-function pendingOf(repo, view, f, login) {
+// `notes` is the keyed hash of the notes the round would use; changed notes are pending.
+function pendingOf(repo, view, f, login, notes) {
   if (!f.state) return { pending: [f.startedOver ? 'start-over' : 'first'], keys: [] };
   const pending = [];
   if (view.head !== f.state.head) pending.push('head');
   if (descHash(view.title, view.body) !== f.state.desc) pending.push('description');
+  if (notes !== f.state.notes) pending.push('notes');
   const r = repliesSince(repo, view, f, login);
   if (r.keys.length || r.conversation) pending.push('reply');
   return { pending, keys: r.conversation ? [] : r.keys };
 }
 
-// What a check compares to tell whether the head, the replies, or the description changed since the previous check.
-const sigOf = (view) => crypto.createHash('sha256').update(JSON.stringify([view.head, descHash(view.title, view.body), seenOf(view)])).digest('hex').slice(0, 16);
+// What a check compares to tell whether the head, the replies, the description, or the notes changed since the previous
+// check.
+const sigOf = (view, notes = '') => crypto.createHash('sha256').update(JSON.stringify([view.head, descHash(view.title, view.body), seenOf(view), notes])).digest('hex').slice(0, 16);
 
 const blocking = (state) => state.findings.filter((x) => x.class === 'blocker' && ['open', 'asked'].includes(x.status));
 
@@ -382,6 +395,153 @@ function failedRounds(dir, id) {
 }
 const countFailed = (dir, id) => writeRecord(dir, id, { ...readRecord(dir, id), failed: [...failedRounds(dir, id), Date.now()] });
 
+// ---- the user's notes -----------------------------------------------------------------------------------------------
+
+// The notes of a pull request live in the store the user chose, recorded as `notes.store` in the skill's per-user
+// config.json: `gist` (a secret gist of the reviewing account per pull request, found by its description) or
+// `repo:OWNER/NAME` (the file OWNER/REPO/N.md in a private repository the account owns). The key of the keyed hash is
+// stored with them. The local copy is a cache, and the only copy until a store holds it (`stored: false`). Where the
+// store is goes into no output, log, review, comment, or marker.
+const NOTES_MAX = 65536;
+const NOTES_FILE = 'notes.md';
+const REPO_STORE = /^repo:[\w.-]+\/[\w.-]+$/;
+const KEY_LINE = /^<!-- concord review notes key: ([0-9a-f]{64}) -->$/;
+class Refused extends Error {
+  constructor(problem) { super('notes store refused'); this.problem = problem; }
+}
+const configFile = (data) => path.join(data, 'config.json');
+function notesStore(data) {
+  const s = readJson(configFile(data), null)?.notes?.store;
+  return s === 'gist' || REPO_STORE.test(s || '') ? s : null;
+}
+function recordStore(data, store) {
+  const cfg = readJson(configFile(data), null);
+  const base = cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
+  writeAtomic(configFile(data), JSON.stringify({ ...base, notes: { ...base.notes, store } }));
+}
+const cacheFile = (ctx) => path.join(ctx.data, 'notes', `${ctx.id}.json`);
+function readCache(ctx) {
+  const c = readJson(cacheFile(ctx), null);
+  return c && typeof c.text === 'string' && /^[0-9a-f]{64}$/.test(c.key) && typeof c.stored === 'boolean' ? c : null;
+}
+const writeCache = (ctx, c) => writeAtomic(path.join(ownerDir(path.join(ctx.data, 'notes')), `${ctx.id}.json`), JSON.stringify(c));
+// The keyed hash the state marker holds: empty for no notes.
+const notesHash = (n) => (n && n.text.trim() ? crypto.createHmac('sha256', Buffer.from(n.key, 'hex')).update(n.text).digest('hex') : '');
+const serialize = (n) => `<!-- concord review notes key: ${n.key} -->\n${n.text}`;
+function parseNotes(content) {
+  const [first, ...rest] = String(content ?? '').split('\n');
+  const m = KEY_LINE.exec(first);
+  if (!m) throw new Refused('format');
+  return { key: m[1], text: rest.join('\n') };
+}
+const gistDescription = (repo, n) => `concord review notes: ${repo.toLowerCase()}#${Number(n)}`;
+const contentsUrl = (name, repo, n) => `repos/${name}/contents/${repo.toLowerCase()}/${Number(n)}.md`;
+const storeJson = (args, input) => ghJson(args, input, true);
+// A 404 is the store's refusal; any other failure (a 403 for a rate limit included) is GitHub's and is reported so.
+const refusedOn = (problem) => (e) => { throw e instanceof GhError && e.status === '404' ? new Refused(problem) : e; };
+// Whether the token may use secret gists: an OAuth token lists its scopes in a header, and without `gist` the account's
+// secret gists are neither listed nor written. A token that lists no scopes is tried.
+let SCOPES;
+function gistScoped() {
+  if (SCOPES === undefined) {
+    const head = gh(['api', '-i', 'user'], undefined, true).split(/\r?\n\r?\n/)[0];
+    const m = /^x-oauth-scopes:(.*)$/im.exec(head);
+    SCOPES = m ? m[1].split(',').map((x) => x.trim()) : null;
+  }
+  return SCOPES === null || SCOPES.includes('gist');
+}
+
+// The account's secret gists described for the pull request, newest first.
+function notesGists(repo, n, login) {
+  if (!gistScoped()) throw new Refused('scope');
+  let pages;
+  try { pages = storeJson(['api', '--paginate', '--slurp', 'gists?per_page=100']); } catch (e) { refusedOn('scope')(e); }
+  return pages.flat().filter((g) => g && g.public === false && lower(g.owner?.login) === login && g.description === gistDescription(repo, n))
+    .sort((a, b) => time(b.created_at) - time(a.created_at));
+}
+// The repository store's checks, before every read and write: the reviewing account owns it, it is private (not
+// internal), and nobody else collaborates on it. Nothing here creates a repository.
+function checkRepo(store, login) {
+  const name = store.slice('repo:'.length);
+  let r;
+  try { r = storeJson(['api', `repos/${name}`]); } catch (e) { refusedOn('missing')(e); }
+  if (lower(r?.owner?.login) !== login) throw new Refused('owner');
+  if (r.visibility !== 'private' || r.private !== true) throw new Refused('visibility');
+  // A Pages site of a private repository can be public, and would serve the notes file.
+  if (r.has_pages !== false) throw new Refused('pages');
+  let people;
+  try { people = storeJson(['api', '--paginate', '--slurp', `repos/${name}/collaborators?affiliation=all&per_page=100`]).flat(); } catch (e) { refusedOn('collaborator')(e); }
+  if (people.some((p) => lower(p?.login) !== login)) throw new Refused('collaborator');
+  return name;
+}
+// The pull request's notes in the store: { notes } (null when it holds none), with the gist's id and the count of
+// duplicate gists, or the file's sha. Throws Refused when the store fails a check.
+function readStore(ctx, store) {
+  const { repo, n, login } = ctx;
+  if (store === 'gist') {
+    const [g, ...dups] = notesGists(repo, n, login);
+    if (!g) return { notes: null, duplicates: 0 };
+    const full = storeJson(['api', `gists/${g.id}`]);
+    return { notes: parseNotes(full.files?.[NOTES_FILE]?.content), id: g.id, duplicates: dups.length };
+  }
+  const name = checkRepo(store, login);
+  let file;
+  try { file = storeJson(['api', contentsUrl(name, repo, n)]); } catch (e) {
+    if (e instanceof GhError && e.status === '404') return { notes: null };
+    throw e;
+  }
+  return { notes: parseNotes(Buffer.from(file.content || '', 'base64').toString('utf8')), sha: file.sha };
+}
+// Writes the complete set over what `readStore` returned (`was`).
+function writeStore(ctx, store, notes, was) {
+  const { repo, n, login } = ctx;
+  const content = serialize(notes);
+  if (store === 'gist') {
+    const files = { [NOTES_FILE]: { content } };
+    let res;
+    try {
+      res = was.id ? storeJson(['api', '-X', 'PATCH', `gists/${was.id}`, '--input', '-'], JSON.stringify({ files }))
+        : storeJson(['api', '-X', 'POST', 'gists', '--input', '-'], JSON.stringify({ description: gistDescription(repo, n), public: false, files }));
+    } catch (e) { refusedOn('scope')(e); }
+    if (res.public !== false) throw new Refused('visibility');
+    return;
+  }
+  const name = checkRepo(store, login);
+  storeJson(['api', '-X', 'PUT', contentsUrl(name, repo, n), '--input', '-'], JSON.stringify({ message: 'concord review notes', content: Buffer.from(content).toString('base64'), ...(was.sha && { sha: was.sha }) }));
+}
+
+// The notes a round uses, given the keyed hash the state shows: { hash, text, duplicates } or { ask, problem }. No
+// round runs with notes that are not in a store: notes only in the cache, notes the state shows that no store holds,
+// and a store that fails a check all ask instead. With no store chosen, a machine that holds no notes but sees a hash
+// looks for the notes gist by its description.
+function loadNotes(ctx, stateHash) {
+  const store = notesStore(ctx.data);
+  const raw = () => { try { return fs.readFileSync(cacheFile(ctx), 'utf8'); } catch { return null; } };
+  const before = raw();
+  const cache = readCache(ctx);
+  if (cache && !cache.stored) return store ? { ask: 'notes-unusable', problem: 'unsaved' } : { ask: 'notes-store' };
+  if (!store && !stateHash && !cache) return { hash: '', text: '', duplicates: 0 };
+  let got;
+  try { got = readStore(ctx, store || 'gist'); } catch (e) {
+    if (!(e instanceof Refused)) throw e;
+    if (store) return { ask: 'notes-unusable', problem: e.problem };
+    got = { notes: null, refused: true };
+  }
+  // Notes `notes` saved while the store was read stay as they are: unsaved ones keep rounds waiting, and stored ones
+  // are left for the next read, which sees them as changed.
+  const changed = raw() !== before;
+  if (changed && readCache(ctx)?.stored === false) return store ? { ask: 'notes-unusable', problem: 'unsaved' } : { ask: 'notes-store' };
+  if (!got.notes) {
+    // A gist lookup this token may not make, on a machine that held notes, does not read as "no notes".
+    if (got.refused && cache) return { ask: 'notes-store' };
+    if (!changed) fs.rmSync(cacheFile(ctx), { force: true });
+    return stateHash ? { ask: 'notes-store' } : { hash: '', text: '', duplicates: 0 };
+  }
+  if (!changed) writeCache(ctx, { ...got.notes, stored: true });
+  return { hash: notesHash(got.notes), text: got.notes.text, duplicates: got.duplicates || 0 };
+}
+const notesQuestion = (l, link) => ({ event: 'question', ask: l.ask, ...(l.problem && { problem: l.problem }), ...(link && { link }) });
+
 // ---- the notice list ------------------------------------------------------------------------------------------------
 
 // A notice line, composed from the printed line's fields only; null for a line the user need not see.
@@ -389,7 +549,7 @@ const countFailed = (dir, id) => writeRecord(dir, id, { ...readRecord(dir, id), 
 // later head is asked again.
 const HOLD = ['cap', 'agent-cannot-start', 'hook-did-not-run', 'account'];
 function questionText(pr, q, head) {
-  return [pr, 'question', q.ask, q.keys?.join(','), q.submodules && `${q.submodules} submodule(s)`, q.rounds !== undefined && `${q.rounds} round(s) in 24 hours`,
+  return [pr, 'question', q.ask, q.problem, q.keys?.join(','), q.submodules && `${q.submodules} submodule(s)`, q.rounds !== undefined && `${q.rounds} round(s) in 24 hours`,
     HOLD.includes(q.ask) && head && `at ${short(head)}`, q.link].filter(Boolean).join(' ');
 }
 function noticeText(pr, l) {
@@ -448,7 +608,7 @@ function recordRun(ctx, fromWatcher) {
       if (!INFORMATIONAL.test(t)) notable++;
     }
     notable += reconcile(base, rec, pr, asked, [...HOLD, 'overflow']);
-    if (PRINTED.some((l) => ['failed', 'error'].includes(l.event) || (l.event === 'question' && HOLD.includes(l.ask)))) rec.held = sigOf(ctx.view);
+    if (PRINTED.some((l) => ['failed', 'error'].includes(l.event) || (l.event === 'question' && HOLD.includes(l.ask)))) rec.held = sigOf(ctx.view, ctx.notes?.hash);
     if (PRINTED.some((l) => l.event === 'question' && l.ask === 'cap')) rec.capHeld = true;
     notifyCount(notable);
   }
@@ -507,7 +667,9 @@ const where = (f) => (f.file ? `\n\n${fencePath(f.file)}${f.line ? `\nline ${f.l
 // ({ text, span, reason } for a new finding, { reply, span } for a verdict); `place` maps a new finding's key to its
 // line in the diff. Everything outside the markers is composed from keys, classes, counts, and links, with agent text
 // escaped and paths and spans fenced.
-function compose({ state, prev, texts = {}, place = {}, threads = new Map(), unverified = [], approve, carried = false, newKeys = [] }) {
+// `setAside` are findings the notes outweigh, by a span quoted from the head; `notFlagged` counts the minor findings a
+// note says not to flag.
+function compose({ state, prev, texts = {}, place = {}, threads = new Map(), unverified = [], approve, carried = false, newKeys = [], setAside = [], notFlagged = 0 }) {
   const head = state.head;
   const comments = [];
   const findingText = (f, full) => `**${f.class}** \`${f.key}\`${full ? `${quote(texts[f.key]?.text)}${texts[f.key]?.reason ? `\n\nClass: ${escapeText(texts[f.key].reason)}` : ''}${span(texts[f.key]?.span)}` : ''}`;
@@ -550,6 +712,12 @@ function compose({ state, prev, texts = {}, place = {}, threads = new Map(), unv
     if (approve) {
       const minors = state.findings.filter((f) => f.status === 'open' && f.class === 'minor');
       if (minors.length) out.push(`### Follow-ups (not blocking)\n${minors.map((f) => `- \`${f.key}\`${ref(f.key)}`).join('\n')}`);
+    }
+    if (setAside.length || notFlagged) {
+      out.push(`### Set aside by the reviewer's notes`);
+      if (notFlagged) out.push(`${notFlagged} minor finding(s) not flagged, as the reviewer's notes ask.`);
+      if (full) for (const x of setAside) out.push(`- **${x.class}**${quote(x.text)}${where(x)}${span(x.span)}`);
+      else if (setAside.length) out.push(`${setAside.length} finding(s) set aside.`);
     }
     if (unverified.length) out.push(`### Unverified${full ? unverified.map((u) => `\n\n${escapeText(u)}`).join('') : `\n\n${unverified.length} item(s)`}`);
     return out;
@@ -649,11 +817,11 @@ function publishCarried(ctx, { carried = false, head }) {
 }
 
 // Composes, scans, and submits one review, then settles threads and the label. Approval is decided on a fresh read.
-function publish(ctx, { state, prev, texts, place, unverified, newKeys = [], carried = false }) {
+function publish(ctx, { state, prev, texts, place, unverified, newKeys = [], carried = false, setAside, notFlagged }) {
   const { repo, n, login, f } = ctx;
   if (ctx.fromWatcher && !watched(ctx)) return [{ event: 'unwatched', pr: tagOf(repo, n) }];
   const live = readMeta(repo, n, login);
-  const make = (where, approve) => compose({ state, prev, texts, place: where, threads: f.threads, unverified, newKeys, carried, approve });
+  const make = (where, approve) => compose({ state, prev, texts, place: where, threads: f.threads, unverified, newKeys, carried, approve, setAside, notFlagged });
   let review = make(place, false);
   const cond = approval({ state: review.state, live, login, unreadable: f.unreadable, approvedHeads: approvedHeads(live), overflow: review.overflow });
   if (cond.approve) review = make(place, true);
@@ -814,24 +982,47 @@ function reviewerOk(text) {
 
 // The verifier's list after the checks: { ok, list } or { ok: false }. A span must occur in its file at the head; a
 // verdict claiming the code settles something without a quoted span becomes `asked`.
-function checkList(text, { state, roundDir, secrets }) {
+// The sentences of the notes, without list markers and normalized, that are long enough to recognize: three words or
+// more and at least 12 characters, so that a path or a name the notes mention is not one. Agent text that contains
+// one is not posted. Paraphrase and shorter sentences are not caught.
+const noteLines = (notes) => String(notes || '').split(/\r\n|\r|\n/).map((l) => l.replace(/^\s*(?:[-*+>]|\d+[.)])\s+/, ''))
+  .flatMap((l) => l.split(/(?<=[.!?;:])\s+/)).map(norm).map((l) => l.replace(/[.!?;:]+$/, ''))
+  .filter((l) => l.length >= 12 && l.split(' ').length >= 3);
+const norm = (t) => String(t).toLowerCase().replace(/\s+/g, ' ').trim();
+function checkList(text, { state, roundDir, secrets, notes = '' }) {
   let v;
   try { v = JSON.parse(text); } catch { return { ok: false, why: 'parse' }; }
-  if (!v || typeof v !== 'object' || !Array.isArray(v.findings) || !Array.isArray(v.verdicts) || (v.unverified !== undefined && !Array.isArray(v.unverified))) return { ok: false, why: 'shape' };
+  const optList = (x) => x === undefined || Array.isArray(x);
+  if (!v || typeof v !== 'object' || !Array.isArray(v.findings) || !Array.isArray(v.verdicts) || !optList(v.unverified) || !optList(v.notFlagged) || !optList(v.setAside)) return { ok: false, why: 'shape' };
   const head = path.join(roundDir, 'head');
   const occurs = (file, s) => {
     if (!str(file) || !file || path.isAbsolute(file) || file.split(/[\\/]/).includes('..')) return false;
     try { return fs.readFileSync(path.join(head, file), 'utf8').includes(s); } catch { return false; }
   };
-  const textOk = (t) => !t || refusal(escapeText(t), { markers: [], secrets }) === null;
+  const quoted = noteLines(notes);
+  const textOk = (t) => !t || (refusal(escapeText(t), { markers: [], secrets }) === null && !quoted.some((l) => norm(t).includes(l)));
   const spanOk = (s) => !s || refusal(fence(s), { markers: [], secrets }) === null;
   const pathOk = (p) => { if (!p) return true; try { return refusal(fencePath(p), { markers: [], secrets }) === null; } catch { return false; } };
+  const kept = (x) => {
+    if (!x || !CLASSES.includes(x.class) || !str(x.text) || !x.text.trim() || !optStr(x.file) || !optLine(x.line) || !optStr(x.span) || !optStr(x.reason) || ![undefined, null, true, false].includes(x.asked)) return 'shape';
+    if (x.span && !occurs(x.file, x.span)) return 'span';
+    if (!textOk(x.text) || !textOk(x.reason) || !spanOk(x.span) || !pathOk(x.file)) return 'text';
+    return { class: x.class, file: x.file || null, line: x.line || null, span: x.span || null, text: x.text, reason: x.reason || null, asked: x.asked === true };
+  };
+  // Weighed against the notes: a finding that conflicts with a note on judgment is published as `asked`. A blocker is
+  // never left unflagged by a note, and a finding is set aside only by a span quoted from the head; either becomes
+  // `asked` instead.
   const findings = [];
-  for (const x of v.findings) {
-    if (!x || !CLASSES.includes(x.class) || !str(x.text) || !x.text.trim() || !optStr(x.file) || !optLine(x.line) || !optStr(x.span) || !optStr(x.reason)) return { ok: false, why: 'shape' };
-    if (x.span && !occurs(x.file, x.span)) return { ok: false, why: 'span' };
-    if (!textOk(x.text) || !textOk(x.reason) || !spanOk(x.span) || !pathOk(x.file)) return { ok: false, why: 'text' };
-    findings.push({ class: x.class, file: x.file || null, line: x.line || null, span: x.span || null, text: x.text, reason: x.reason || null });
+  const setAside = [];
+  let notFlagged = 0;
+  for (const [list, kind] of [[v.findings, 'finding'], [v.notFlagged || [], 'notFlagged'], [v.setAside || [], 'setAside']]) {
+    for (const x of list) {
+      const k = kept(x);
+      if (typeof k === 'string') return { ok: false, why: k };
+      if (kind === 'notFlagged' && k.class === 'minor') notFlagged++;
+      else if (kind === 'setAside' && k.span) setAside.push(k);
+      else findings.push(kind === 'finding' ? k : { ...k, asked: true });
+    }
   }
   const known = new Map(state ? state.findings.map((x) => [x.key, x]) : []);
   const verdicts = [];
@@ -846,7 +1037,7 @@ function checkList(text, { state, roundDir, secrets }) {
   }
   const unverified = (v.unverified || []).filter(str);
   if (!unverified.every(textOk)) return { ok: false, why: 'text' };
-  return { ok: true, list: { findings, verdicts, unverified } };
+  return { ok: true, list: { findings, verdicts, unverified, setAside, notFlagged } };
 }
 
 // Runs one agent, once more on a malformed output. Returns { output } or { stop: ask } or { fail: reason }.
@@ -893,11 +1084,11 @@ function nextState(ctx, list, round) {
     const key = `${round}.${i + 1}`;
     newKeys.push(key);
     texts[key] = { text: x.text, span: x.span, reason: x.reason };
-    findings.push({ key, class: x.class, status: 'open', file: x.file, line: x.line, raised: head, at: head, closed: null, closedRound: null, decided: false });
+    findings.push({ key, class: x.class, status: x.asked ? 'asked' : 'open', file: x.file, line: x.line, raised: head, at: head, closed: null, closedRound: null, decided: false });
   });
   const subs = gitlinks(ctx.gitDir, mergeBase, head).map((s) => ({ ...s, ok: Boolean(prev?.subs.some((p) => p.path === s.path && p.to === s.to && p.ok)) }));
   return {
-    state: { v: 1, round, agents: true, head, base: rangeBase, mergeBase, desc: descHash(view.title, view.body), notes: '', lang: ctx.lang, seen: seenOf(view), subs, findings },
+    state: { v: 1, round, agents: true, head, base: rangeBase, mergeBase, desc: descHash(view.title, view.body), notes: ctx.notes.hash, lang: ctx.lang, seen: seenOf(view), subs, findings },
     texts, newKeys,
   };
 }
@@ -991,9 +1182,12 @@ function stateVerb(ctx) {
   if (!readView(ctx)) return;
   const { view, f } = ctx;
   if (ended(view)) return;
-  const p = pendingOf(ctx.repo, view, f, ctx.login);
+  const notes = loadNotes(ctx, f.state?.notes || '');
+  const p = pendingOf(ctx.repo, view, f, ctx.login, notes.ask ? f.state?.notes : notes.hash);
   const cond = approval({ state: f.state, live: view, login: ctx.login, unreadable: f.unreadable, approvedHeads: approvedHeads(view) });
   print({ event: 'state', pending: p.pending, approvable: cond.approve, why: cond.why, ...(f.state && { round: f.state.round, head: f.state.head, ...tally(f.state) }), link: view.url });
+  if (notes.ask) print(notesQuestion(notes, view.url));
+  else if (notes.duplicates) print({ event: 'notes', duplicates: notes.duplicates });
   askAll(ctx, ctx.repo, view, f);
 }
 
@@ -1009,7 +1203,12 @@ async function roundVerb(ctx, opts) {
   ctx.secrets = credentials(ctx.harness);
   const f = ctx.f;
   ctx.lang = opts.language ?? f.state?.lang ?? '';
-  const { pending, keys } = pendingOf(repo, view, f, login);
+  // No round runs, and nothing is approved, without the notes from their store.
+  const notes = loadNotes(ctx, f.state?.notes || '');
+  if (notes.ask) return print(notesQuestion(notes, view.url));
+  ctx.notes = notes;
+  if (notes.duplicates) print({ event: 'notes', duplicates: notes.duplicates });
+  const { pending, keys } = pendingOf(repo, view, f, login, notes.hash);
   const work = { gitDir: null };
   try {
     if (!pending.length) {
@@ -1045,7 +1244,7 @@ async function roundVerb(ctx, opts) {
     // The daily cap counts rounds that ran an agent: published ones from the state reviews, failed ones locally.
     const used = f.states.filter((x) => x.state?.agents && Date.now() - x.at < DAY).length + failedRounds(ctx.data, ctx.id).length;
     if (used >= CAP) return print({ event: 'question', ask: 'cap', rounds: used, link: view.url });
-    const rangeBase = ancestor && s.mergeBase === ctx.mergeBase && !pending.includes('description') ? s.head : ctx.mergeBase;
+    const rangeBase = ancestor && s.mergeBase === ctx.mergeBase && !pending.includes('description') && !pending.includes('notes') ? s.head : ctx.mergeBase;
     ctx.rangeBase = rangeBase;
     const failed = (reason) => { countFailed(ctx.data, ctx.id); print({ event: 'failed', reason }); };
     try { prepare(ctx, rangeBase); } catch (e) {
@@ -1056,14 +1255,14 @@ async function roundVerb(ctx, opts) {
     OWNED.add(ctx.work);
     const round = f.nextRound;
     const focus = pending.length === 1 && pending[0] === 'reply' && keys.length ? keys.join(', ') : 'every finding in prior.json';
-    const fill = { ROUND_DIR: ctx.roundDir, LANGUAGE: ctx.lang || 'the language of the pull request description', FOCUS: focus, BROAD: rangeBase === ctx.mergeBase ? 'the whole pull request' : 'the commits since the last reviewed head (diff.patch), with pr.patch for context' };
+    const fill = { ROUND_DIR: ctx.roundDir, NOTES: notes.hash ? fence(notes.text) : 'none', LANGUAGE: ctx.lang || 'the language of the pull request description', FOCUS: focus, BROAD: rangeBase === ctx.mergeBase ? 'the whole pull request' : 'the commits since the last reviewed head (diff.patch), with pr.patch for context' };
     const rev = await agent(ctx, 'reviewer', (output) => request('reviewer-request.md', { ...fill, OUTPUT: output }), (t) => (reviewerOk(t) ? t : null));
     if (rev.stop) return print({ event: 'question', ask: rev.stop, link: view.url });
     if (rev.fail) return failed(rev.fail);
     fs.mkdirSync(path.join(ctx.roundDir, 'review'));
     fs.writeFileSync(path.join(ctx.roundDir, 'review', 'result.json'), rev.output);
     const ver = await agent(ctx, 'verifier', (output) => request('verifier-request.md', { ...fill, OUTPUT: output, RESULT: path.join(ctx.roundDir, 'review', 'result.json') }),
-      (t) => { const c = checkList(t, { state: f.state, roundDir: ctx.roundDir, secrets: ctx.secrets }); if (!c.ok) log('verifier list', c.why); return c.ok ? c.list : null; });
+      (t) => { const c = checkList(t, { state: f.state, roundDir: ctx.roundDir, secrets: ctx.secrets, notes: notes.text }); if (!c.ok) log('verifier list', c.why); return c.ok ? c.list : null; });
     if (ver.stop) return print({ event: 'question', ask: ver.stop, link: view.url });
     if (ver.fail) return failed(ver.fail);
     const next = nextState(ctx, ver.output, round);
@@ -1077,7 +1276,7 @@ async function roundVerb(ctx, opts) {
       const line = placeLine(content, next.texts[key].span, x.file, hunks);
       if (line) place[key] = line;
     }
-    const out = publish(ctx, { state: next.state, prev: f.state, texts: next.texts, place, unverified: ver.output.unverified, newKeys: next.newKeys });
+    const out = publish(ctx, { state: next.state, prev: f.state, texts: next.texts, place, unverified: ver.output.unverified, newKeys: next.newKeys, setAside: ver.output.setAside, notFlagged: ver.output.notFlagged });
     // A round that ran its agents and could not publish counts against the daily cap like any failed round.
     if (out[0].event === 'failed') countFailed(ctx.data, ctx.id);
     for (const l of out) print(l);
@@ -1116,10 +1315,50 @@ function decideVerb(ctx, pos, opts) {
   ctx.secrets = credentials(ctx.harness);
   const g = ctx.f;
   if (!g.state) return;
+  // Nothing is approved without the notes from their store, or before a round has weighed changed notes.
+  const notes = loadNotes(ctx, g.state.notes);
+  if (notes.ask) print(notesQuestion(notes, ctx.view.url));
   const cond = approval({ state: g.state, live: ctx.view, login, unreadable: g.unreadable, approvedHeads: approvedHeads(ctx.view) });
-  if (cond.approve) for (const l of publishCarried(ctx, {})) print(l);
+  if (cond.approve && !notes.ask && notes.hash === g.state.notes) for (const l of publishCarried(ctx, {})) print(l);
   else label(repo, n, ctx.view, blocking(g.state).length > 0 || g.unreadable);
   askAll(ctx, repo, ctx.view, g);
+}
+
+// notes: the only writer of the user's notes. With `-` it saves the complete set read from stdin; without it, it saves
+// notes only the cache holds, or else looks the notes up. `--store` records the store the user chose. The notes go to
+// the cache first, so that nothing the user said is lost while no store holds it.
+function notesVerb(ctx, pos, opts) {
+  if (opts.store !== undefined && opts.store !== 'gist' && !REPO_STORE.test(opts.store)) return refuse('--store must be gist or repo:OWNER/NAME');
+  if (pos.length > 1 || (pos.length && pos[0] !== '-')) return refuse('usage: notes <owner/repo> <n> [-] [--store gist|repo:OWNER/NAME]');
+  let text = null;
+  if (pos[0] === '-') {
+    text = fs.readFileSync(0, 'utf8');
+    if (Buffer.byteLength(text) > NOTES_MAX) return refuse('notes are limited to 64 KiB');
+  }
+  if (opts.store) recordStore(ctx.data, opts.store);
+  const store = notesStore(ctx.data);
+  const cache = readCache(ctx);
+  const notes = text !== null ? { key: cache?.key || crypto.randomBytes(32).toString('hex'), text } : cache && !cache.stored ? cache : null;
+  if (!notes) {
+    if (!store) return print({ event: 'question', ask: 'notes-store' });
+    const l = loadNotes(ctx, '');
+    if (l.ask) return print(notesQuestion(l));
+    return print({ event: 'notes', saved: false, empty: !l.hash, ...(l.duplicates && { duplicates: l.duplicates }) });
+  }
+  writeCache(ctx, { ...notes, stored: false });
+  if (!store) return print({ event: 'question', ask: 'notes-store' });
+  try {
+    const was = readStore(ctx, store);
+    // The key stays the one the store holds, so that saving the same notes again changes no hash.
+    const saved = { key: was.notes?.key || notes.key, text: notes.text };
+    writeCache(ctx, { ...saved, stored: false });
+    writeStore(ctx, store, saved, was);
+    writeCache(ctx, { ...saved, stored: true });
+    print({ event: 'notes', saved: true, empty: !notesHash(saved), ...(was.duplicates && { duplicates: was.duplicates }) });
+  } catch (e) {
+    if (!(e instanceof Refused)) throw e;
+    print(notesQuestion({ ask: 'notes-unusable', problem: e.problem }));
+  }
 }
 
 // ---- waiting --------------------------------------------------------------------------------------------------------
@@ -1234,13 +1473,21 @@ function checkVerb(harness) {
           addNotice(base, SKILL, `${pr} review-blocked label restored`);
         } catch { /* an account without write access cannot set it */ }
       }
-      notable += reconcile(base, rec, pr, questions(e.repo, view, f).map((q) => questionText(pr, q)), ['asked', 'unreadable', 'submodule', 'account']);
-      const sig = sigOf(view);
+      // The notes, from their store: a check that cannot have them lists the question and runs nothing.
+      let notes;
+      try { notes = loadNotes({ data, repo: e.repo, n: e.n, login, id }, f.state?.notes || ''); } catch {
+        failed = true;
+        continue;
+      }
+      const asks = [...questions(e.repo, view, f), ...(notes.ask ? [notesQuestion(notes, view.url)] : [])];
+      notable += reconcile(base, rec, pr, asks.map((q) => questionText(pr, q)), ['asked', 'unreadable', 'submodule', 'account', ...NOTES_ASKS]);
+      if (notes.ask) continue;
+      const sig = sigOf(view, notes.hash);
       // Held: a watcher round failed on this view, or the watcher stopped at the daily cap and nothing runs until the
       // user invokes the skill.
       if (rec.view?.sig !== sig) rec.view = { sig, since: Date.now() };
       else if (next || rec.held === sig || rec.capHeld) continue;
-      else if (pendingOf(e.repo, view, f, login).pending.length) {
+      else if (pendingOf(e.repo, view, f, login, notes.hash).pending.length) {
         if (Date.now() - rec.view.since >= interval()) next = e;
       } else if (approval({ state: f.state, live: view, login, unreadable: f.unreadable, approvedHeads: approvedHeads(view) }).approve) next = e;
     } finally {
@@ -1277,13 +1524,24 @@ async function main(argv) {
   if (verb === 'check') { process.exitCode = checkVerb(harnessOf(parseArgs(more).opts)); return; }
   if (verb === 'watcher') return runtime.watch({ skill: SKILL, harness: harnessOf(parseArgs(more).opts), own: __filename });
   const [repo, n, ...rest] = more;
-  if (!['state', 'round', 'decide'].includes(verb) || !target(repo, n)) usage('usage: review-until-approve.js state|round|decide <owner/repo> <n> [...] | watch ... | check | watcher');
+  if (!['state', 'round', 'decide', 'notes'].includes(verb) || !target(repo, n)) usage('usage: review-until-approve.js state|round|decide|notes <owner/repo> <n> [...] | watch ... | check | watcher');
   const { pos, opts } = parseArgs(rest);
   trapSignals();
   const ctx = begin(repo, n, opts);
   if (!ctx) return;
-  if (verb === 'state') return stateVerb(ctx);
-  if (verb === 'decide') return withLock(ctx, () => { decideVerb(ctx, pos, opts); recordRun(ctx, false); });
+  // A failed GitHub read in state, notes, or decide is reported as `github`; no stack is logged, so nothing names the
+  // store.
+  const guarded = (fn) => {
+    try { return fn(); } catch (e) {
+      log(verb, e instanceof GhError ? 'gh failed' : e && e.name);
+      print({ event: 'error', reason: e instanceof GhError ? 'github' : 'internal' });
+      process.exitCode = 1;
+      return undefined;
+    }
+  };
+  if (verb === 'state') return guarded(() => stateVerb(ctx));
+  if (verb === 'notes') return guarded(() => notesVerb(ctx, pos, opts));
+  if (verb === 'decide') return withLock(ctx, () => { guarded(() => decideVerb(ctx, pos, opts)); recordRun(ctx, false); });
   return withLock(ctx, async () => {
     // A round that throws is recorded like a failed one, so that the watcher holds it and the user hears of it.
     try { await roundVerb(ctx, opts); } catch (e) {
