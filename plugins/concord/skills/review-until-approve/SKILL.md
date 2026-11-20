@@ -1,7 +1,7 @@
 ---
 name: review-until-approve
 description: >-
-  Use when the user names someone else's pull request and wants it reviewed until it can be approved: each round runs a confined reviewer and a confined verifier and publishes one review, and the reviewed head is approved once nothing blocks; a background watcher with no model call runs the next round when the author pushes or replies, and approves when the pull request becomes ready —
+  Use when the user names someone else's pull request and wants it reviewed until it can be approved: each round runs a confined reviewer and a confined verifier and publishes one review, and the reviewed head is approved once nothing blocks; the user's private notes on the pull request go to both agents; a background watcher with no model call runs the next round when the author pushes or replies, and approves when the pull request becomes ready —
   "이 PR 승인될 때까지 리뷰해줘", "review this PR until it is approvable", "watch acme/app#57 and approve when clean", "stop watching acme/app#57".
   Do NOT use for your own branch (use review-and-fix) or to collect other reviewers' comments on your own PR (use pr-to-merge).
 ---
@@ -18,6 +18,7 @@ Invoking this skill on a pull request authorizes every review the script posts t
 - Never read, list, or open the round directory, the agents' files, the script's log, or anything under Concord's per-user state directory. The script prints no path to them.
 - Never edit, wrap, or replace the script or its request files, and never run the agents yourself.
 - Relay only what a printed line holds: its event, counts, keys, head hashes, and links. Nothing else about the pull request comes from you.
+- Never write the user's notes, or where they are kept, anywhere but the `notes` command: not in a comment, a decision's reason, or a file.
 
 ## Setup
 
@@ -29,7 +30,7 @@ Invoking this skill on a pull request authorizes every review the script posts t
 
 ## A round
 
-On every invocation, first run `watch add <owner/repo> <n> --harness <claude|codex>`, outside any sandbox (the watcher keeps the sandbox of the process that starts it), with the `--model` and `--effort` the user asked for (below), then `round <owner/repo> <n> --harness <claude|codex>` with the same options. `round` runs a round when something is pending: no review yet, a new head, a reply from the author or an account with write access, or a changed description. With nothing pending it approves the reviewed head when the condition holds, and otherwise prints `nothing`. A round the user invokes runs even when the watcher is holding back a failed one. After that, the watcher waits for the author (see Waiting); you do not.
+On every invocation, first run `watch add <owner/repo> <n> --harness <claude|codex>`, outside any sandbox (the watcher keeps the sandbox of the process that starts it), with the `--model` and `--effort` the user asked for (below), then `round <owner/repo> <n> --harness <claude|codex>` with the same options. `round` runs a round when something is pending: no review yet, a new head, a reply from the author or an account with write access, a changed description, or changed notes. With nothing pending it approves the reviewed head when the condition holds, and otherwise prints `nothing`. A round the user invokes runs even when the watcher is holding back a failed one. After that, the watcher waits for the author (see Waiting); you do not.
 
 Each line is one JSON object. Say one line per event to the user:
 
@@ -53,7 +54,7 @@ Each line is one JSON object. Say one line per event to the user:
 - `watcher` with `started: true`: the watcher was started; `running: true`: it was already running. Both mean that rounds now run without a session.
 - `watcher` with `reason: probe`: the state directory or GitHub could not be reached from here (a harness sandbox), so nothing was added or started. Give the user the same `watch add` command, with the `scripts/` directory resolved, to run in a terminal.
 
-The watcher checks every five minutes with `gh` and no model. A push, a reply, or a description edit runs a round once the head and the replies have stayed unchanged for one check; a pull request made ready after a clean review is approved with no agent; a merged or closed one leaves the list. It runs at most six agent rounds per pull request in 24 hours, does not retry a failed round until something changes, and writes what it did to Concord's notice list, which the session-start message shows.
+The watcher checks every five minutes with `gh` and no model. A push, a reply, a description edit, or changed notes runs a round once the head and the replies have stayed unchanged for one check; a pull request made ready after a clean review is approved with no agent; a merged or closed one leaves the list. It runs at most six agent rounds per pull request in 24 hours, does not retry a failed round until something changes, and writes what it did to Concord's notice list, which the session-start message shows.
 
 `watch status --harness <claude|codex>` prints whether the watcher runs (`watcher`, `running`), each watched pull request with the time of its last check (`watching`, `pr`, `checked`), and each pending line (`notice`). Relay them. A `notice` line starts with the pull request:
 
@@ -78,6 +79,25 @@ A `question` line names what it asks with `ask`. Ask the user in one message, gi
 - `cap`: `rounds` agent rounds ran in the last 24 hours; no seventh runs. Tell the user; a later invocation runs once the window allows.
 - `account`: the account cannot read the pull request. Ask the user which account to use; never choose another account or profile yourself.
 - `overflow`: the review exceeded GitHub's size limit, so it does not approve. Tell the user.
+- `notes-store`: no store is chosen for notes saved on this machine, or the state on the pull request shows notes that no store this machine knows holds. No round runs. Ask the user to choose a secret gist or a private repository of theirs (see The user's notes), then run `notes <owner/repo> <n> --store gist` or `--store repo:OWNER/NAME` with their answer: it records the store, saves the notes waiting on this machine, or finds the notes there. Then run `round`.
+- `notes-unusable`: the store cannot be used, and no round runs. `problem` says why: `scope` (`gh` lacks the `gist` scope; the user runs `gh auth refresh -s gist`), `missing` (the repository does not exist or the account cannot read it), `owner` (another account owns it), `visibility` (it is not private), `collaborator` (someone else collaborates on it), `format` (the stored notes do not parse), `unsaved` (notes saved on this machine have not reached the store; `notes <owner/repo> <n>` tries again). Tell the user; once it is fixed, run `notes <owner/repo> <n>` and `round`.
+
+## The user's notes
+
+The notes are the user's view of the pull request ("approach X is fine", a worry, what not to flag), private to the reviewing account: the author never sees them and no review quotes them. Both agents read them as the user's instruction. When the user gives notes, write the complete set from the user's words alone (the earlier notes the user keeps and the new ones; add nothing of your own) and save it with `notes <owner/repo> <n> - --harness <claude|codex>`, the set on standard input through a quoted heredoc (`<<'NOTES'`). It replaces the whole set; an empty input clears it. Then run `round` as on any invocation: changed notes are pending and start a round over the whole pull request.
+
+The notes are kept in a store the user chooses once; neither is a default:
+
+- a secret gist of the reviewing account: no setup, but anyone who learns its URL can read it; it needs the `gist` scope, which `gh auth login` grants by default. Option `--store gist`.
+- a private repository the user owns and nobody else collaborates on, not an organization's internal one. Option `--store repo:OWNER/NAME`. The script checks this before every read and write and never creates the repository.
+
+Pass `--store` with the user's answer to a `notes-store` question, or when the user changes the store; it is recorded for every pull request on this machine, and notes already saved are not moved. A machine whose notes are in no store yet keeps them locally, and no round runs until a store holds them.
+
+`notes` prints:
+
+- `notes` with `saved: true`: the store holds the set; `empty: true` means the set is empty. With `saved: false` it only looked: `empty` says whether the store holds notes for the pull request.
+- `notes` with `duplicates`: the store has that many older notes gists for this pull request; the newest is used. Tell the user they may delete the older ones (each is described `concord review notes: <owner/repo>#<n>`). `round` and `state` print it too.
+- `question` with `ask: notes-store` or `notes-unusable`: as under Questions.
 
 ## Decisions
 
@@ -97,4 +117,4 @@ Set an option only on the user's explicit request; never infer one from the lang
 
 ## What a review holds
 
-One review per published round, pinned to the reviewed head, with event `COMMENT` or `APPROVE`. New findings whose quoted span lies in the diff are line comments, each starting with its marker; the rest are in the body with file and line. The body lists, by key, the findings for the reviewer to decide, the fixed, the answered, and the still-open ones with links to their threads, the unreviewed submodules, the Unverified items, and, on an approval, the open minor findings as follow-ups. Agent text is escaped and quoted; paths and quoted spans are in fenced blocks. Each fixed or answered thread gets one reply from the script and is resolved; a reopened one is unresolved. `review-blocked` is on exactly while a blocking finding is open or asked, or the state is unreadable.
+One review per published round, pinned to the reviewed head, with event `COMMENT` or `APPROVE`. New findings whose quoted span lies in the diff are line comments, each starting with its marker; the rest are in the body with file and line. The body lists, by key, the findings for the reviewer to decide, the fixed, the answered, and the still-open ones with links to their threads, the unreviewed submodules, the findings set aside by the user's notes (with the quote that settles each, and the count of minor findings a note said not to flag; a blocker is never left unflagged by a note, it is asked), the Unverified items, and, on an approval, the open minor findings as follow-ups. Agent text is escaped and quoted; paths and quoted spans are in fenced blocks. Each fixed or answered thread gets one reply from the script and is resolved; a reopened one is unresolved. `review-blocked` is on exactly while a blocking finding is open or asked, or the state is unreadable.

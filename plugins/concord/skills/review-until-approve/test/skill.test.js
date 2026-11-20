@@ -26,7 +26,17 @@ test('the session never reads the pull request or the round directory and relays
   assert.match(skill, /Relay only what a printed line holds/);
   // Every event and question the script can print is explained.
   for (const e of ['published', 'nothing', 'superseded', 'locked', 'failed', 'merged', 'question', 'error']) assert.match(skill, new RegExp(`\`${e}\``), e);
-  for (const a of ['asked', 'unreadable', 'submodule', 'agent-cannot-start', 'hook-did-not-run', 'cap', 'account', 'overflow']) assert.match(skill, new RegExp(`\`${a}\``), a);
+  for (const a of ['asked', 'unreadable', 'submodule', 'agent-cannot-start', 'hook-did-not-run', 'cap', 'account', 'overflow', 'notes-store', 'notes-unusable']) assert.match(skill, new RegExp(`\`${a}\``), a);
+  for (const p of ['scope', 'missing', 'owner', 'visibility', 'collaborator', 'format', 'unsaved']) assert.match(skill, new RegExp(`\`${p}\``), p);
+});
+
+test('the session saves the user\'s notes only through notes, in the user\'s words, to a store the user chose', () => {
+  assert.match(skill, /`notes <owner\/repo> <n> - --harness <claude\|codex>`/);
+  assert.match(skill, /from the user's words alone/);
+  assert.match(skill, /neither is a default/);
+  assert.match(skill, /`--store gist`/);
+  assert.match(skill, /`--store repo:OWNER\/NAME`/);
+  assert.match(skill, /Never write the user's notes, or where they are kept, anywhere but the `notes` command/);
 });
 
 test('every invocation puts the pull request on the watch list before its round, and the user\'s stop is watch remove', () => {

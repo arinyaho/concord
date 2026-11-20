@@ -90,6 +90,45 @@ else if (method === 'POST' && url === 'repos/o/r/pulls/5/reviews') {
 } else if (method === 'DELETE' && url === 'repos/o/r/issues/5/labels/review-blocked') {
   pr.labels.nodes = pr.labels.nodes.filter((l) => l.name !== 'review-blocked');
   done([]);
+} else if (a[0] === 'api' && /^gists/.test(url || '')) {
+  // Gists of every account; the authenticated account lists its own. Without the gist scope (noGistScope) the list
+  // holds only public gists and a write is refused, as GitHub does.
+  w.gists = w.gists || [];
+  const id = (/^gists\\/(\\w+)$/.exec(url) || [])[1];
+  if (method === 'GET' && !id) out([w.gists.filter((g) => g.owner.login === w.login && (!w.noGistScope || g.public)).map(({ files, ...g }) => ({ ...g, files: Object.fromEntries(Object.keys(files).map((k) => [k, {}])) }))]);
+  else if (w.noGistScope && method !== 'GET') fail('gh: HTTP 404');
+  else if (method === 'GET') { const g = w.gists.find((x) => x.id === id); g ? out(g) : fail('gh: HTTP 404'); }
+  else if (method === 'POST') {
+    const p = JSON.parse(input);
+    const at = now();
+    const g = { id: 'g' + require('node:crypto').randomBytes(10).toString('hex'), owner: { login: w.login }, description: p.description, public: p.public !== false, created_at: at, updated_at: at, files: Object.fromEntries(Object.entries(p.files).map(([k, v]) => [k, { content: v.content }])) };
+    w.gists.push(g);
+    done(g);
+  } else if (method === 'PATCH') {
+    const g = w.gists.find((x) => x.id === id && x.owner.login === w.login);
+    if (!g) fail('gh: HTTP 404');
+    for (const [k, v] of Object.entries(JSON.parse(input).files)) g.files[k] = { content: v.content };
+    g.updated_at = now();
+    done(g);
+  } else fail('unexpected gh call: ' + a.join(' '));
+} else if (a[0] === 'api' && (m = /^repos\\/([\\w.-]+\\/[\\w.-]+)(\\/.*)?$/.exec((url || '').split('?')[0])) && m[1] !== 'o/r') {
+  // Repositories other than the reviewed one: { owner, visibility, collaborators, files }.
+  const r = (w.repos || {})[m[1]];
+  if (!r) fail('gh: HTTP 404');
+  const rest = m[2] || '';
+  let c;
+  if (!rest && method === 'GET') out({ full_name: m[1], owner: { login: r.owner }, visibility: r.visibility, private: r.visibility !== 'public' });
+  else if (rest === '/collaborators' && method === 'GET') out([[{ login: r.owner }, ...(r.collaborators || []).map((login) => ({ login }))]]);
+  else if ((c = /^\\/contents\\/(.+)$/.exec(rest))) {
+    r.files = r.files || {};
+    if (method === 'GET') r.files[c[1]] !== undefined ? out({ sha: 's' + r.files[c[1]].length, content: Buffer.from(r.files[c[1]]).toString('base64') }) : fail('gh: HTTP 404');
+    else if (method === 'PUT') {
+      const p = JSON.parse(input);
+      if (r.files[c[1]] !== undefined && p.sha !== 's' + r.files[c[1]].length) fail('gh: HTTP 409');
+      r.files[c[1]] = Buffer.from(p.content, 'base64').toString('utf8');
+      done({ content: { path: c[1] } });
+    } else fail('unexpected gh call: ' + a.join(' '));
+  } else fail('unexpected gh call: ' + a.join(' '));
 } else fail('unexpected gh call: ' + a.join(' '));
 `;
 
@@ -110,7 +149,7 @@ const mode = JSON.parse(fs.readFileSync(path.join(process.env.EXPLAIN_PR_DIR, 'm
 const counter = path.join(here, role + '.count');
 const n = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0;
 fs.writeFileSync(counter, String(n + 1));
-fs.appendFileSync(path.join(here, 'agents.jsonl'), JSON.stringify({ role, args: args.slice(0, -1), env: process.env, dir: mode.dir, files: fs.readdirSync(mode.dir) }) + '\\n');
+fs.appendFileSync(path.join(here, 'agents.jsonl'), JSON.stringify({ role, args: args.slice(0, -1), prompt, env: process.env, dir: mode.dir, files: fs.readdirSync(mode.dir) }) + '\\n');
 if (b.start === 'fail') process.exit(1);
 // Another round publishing while this one runs: a state review appears in the world before this agent finishes.
 if (b.inject && role === 'verifier') {
@@ -214,8 +253,9 @@ function world({ base = { 'a.js': 'one\ntwo\nthree\n' }, files = { 'a.js': 'one\
       GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: `url.file://${path.join(dir, 'remote')}/.insteadOf`, GIT_CONFIG_VALUE_0: 'https://github.com/',
       GIT_CONFIG_KEY_1: 'protocol.file.allow', GIT_CONFIG_VALUE_1: 'always', ...extra,
     }),
-    run(args, env = {}) {
-      const r = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', timeout: 120000, env: self.env(env) });
+    // `input` is the script's stdin (the notes `notes ... -` reads).
+    run(args, env = {}, input = '') {
+      const r = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', timeout: 120000, env: self.env(env), input });
       const out = r.stdout.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
       return { status: r.status, out, stdout: r.stdout, stderr: r.stderr };
     },
