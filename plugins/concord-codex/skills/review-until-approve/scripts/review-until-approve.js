@@ -8,6 +8,9 @@
 //        review-until-approve.js decide <owner/repo> <n> <key> keep|waive|blocker|minor --reason <text>
 //        review-until-approve.js decide <owner/repo> <n> submodule:<path> accept --reason <text>
 //        review-until-approve.js decide <owner/repo> <n> continue|start-over --reason <text>
+//        review-until-approve.js watch add|remove <owner/repo> <n> [--harness claude|codex] [--model m] [--effort e]
+//        review-until-approve.js watch status [--harness claude|codex]
+//        review-until-approve.js check|watcher --harness claude|codex   (one check; the watcher loop, which watch add starts)
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -16,7 +19,8 @@ const { spawnSync } = require('node:child_process');
 const { dataDir, ensureDataDir } = require('../../../runtime/data-dir');
 const { runConfined } = require('../../../runtime/confined-agent');
 const { escapeText, fence, fencePath, refusal, credentials } = require('../../../runtime/post-text');
-const { takeLock, releaseLock, readJson, writeAtomic, ownerDir } = require('../../../runtime/watcher');
+const runtime = require('../../../runtime/watcher');
+const { takeLock, releaseLock, readJson, writeAtomic, ownerDir, running, addNotice, pendingNotices, markShown, notify } = runtime;
 const { crossPlatformCommand, crossPlatformArgs, crossPlatformOpts, needsDoubleEscape } = require('../../../runtime/spawn-cross-platform');
 const { removeSymlinks } = require('../../explain-pr/scripts/explain-pr');
 
@@ -35,7 +39,7 @@ const REQUESTS = path.join(__dirname, '..', 'references');
 // ---- output: the fixed vocabulary -----------------------------------------------------------------------------------
 
 const ASKS = ['asked', 'unreadable', 'submodule', 'agent-cannot-start', 'hook-did-not-run', 'cap', 'account', 'overflow'];
-const REASONS = ['reviewer-output', 'verifier-list', 'prepare', 'submission', 'refused', 'author', 'github', 'reason-refused', 'internal'];
+const REASONS = ['reviewer-output', 'verifier-list', 'prepare', 'submission', 'refused', 'author', 'github', 'reason-refused', 'internal', 'probe'];
 const PENDING = ['first', 'head', 'reply', 'description', 'start-over'];
 const WHY = ['closed', 'head-moved', 'draft', 'author', 'blocker', 'unreadable', 'submodule', 'approved', 'overflow'];
 const sha = (v) => typeof v === 'string' && HEX.test(v);
@@ -45,20 +49,27 @@ const listOf = (ok) => (v) => Array.isArray(v) && v.every(ok);
 const link = (v) => typeof v === 'string' && /^https:\/\/[\w.-]+\/[\w.-]+\/[\w.-]+\/pull\/\d+(#[\w-]+)?$/.test(v);
 const keyish = (v) => typeof v === 'string' && KEY.test(v);
 const FIELDS = {
-  event: oneOf(['state', 'nothing', 'published', 'superseded', 'locked', 'failed', 'question', 'decided', 'closed', 'merged', 'error']),
+  event: oneOf(['state', 'nothing', 'published', 'superseded', 'locked', 'failed', 'question', 'decided', 'closed', 'merged', 'error', 'watching', 'unwatched', 'watcher', 'notice']),
   ask: oneOf(ASKS), reason: oneOf(REASONS), pending: listOf(oneOf(PENDING)), why: listOf(oneOf(WHY)),
   review: oneOf(['APPROVE', 'COMMENT']), decision: oneOf([...DECISIONS, 'accept', 'continue', 'start-over']),
   agents: (v) => typeof v === 'boolean', approvable: (v) => typeof v === 'boolean', carried: (v) => typeof v === 'boolean',
   head: sha, link, keys: listOf(keyish), key: keyish,
   round: count, new: count, fixed: count, answered: count, open: count, asked: count, blockers: count, minors: count,
   submodules: count, rounds: count, set: count,
+  pr: (v) => typeof v === 'string' && /^[\w.-]+\/[\w.-]+#\d+$/.test(v), running: (v) => typeof v === 'boolean', started: (v) => typeof v === 'boolean',
+  checked: (v) => typeof v === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/.test(v),
+  // A notice line is composed by this script from the fields above (see noticeText).
+  notice: (v) => typeof v === 'string' && v.length <= 400 && /^[\w.-]+\/[\w.-]+#\d+ [\w .,:;()/#=+-]+$/.test(v),
 };
 // Every printed line is checked against the vocabulary; a line that does not fit is a bug and is not printed.
 function valid(line) {
   return line && typeof line === 'object' && Object.entries(line).every(([k, v]) => Object.hasOwn(FIELDS, k) && FIELDS[k](v));
 }
+// What this process printed, for the notice list.
+const PRINTED = [];
 function print(line) {
   if (!valid(line)) throw new Error(`a line outside the vocabulary: ${Object.keys(line).join(',')}`);
+  PRINTED.push(line);
   process.stdout.write(`${JSON.stringify(line)}\n`);
 }
 
@@ -306,6 +317,9 @@ function pendingOf(repo, view, f, login) {
   return { pending, keys: r.conversation ? [] : r.keys };
 }
 
+// What a check compares to tell whether the head, the replies, or the description changed since the previous check.
+const sigOf = (view) => crypto.createHash('sha256').update(JSON.stringify([view.head, descHash(view.title, view.body), seenOf(view)])).digest('hex').slice(0, 16);
+
 const blocking = (state) => state.findings.filter((x) => x.class === 'blocker' && ['open', 'asked'].includes(x.status));
 
 // The approval condition. `approvedHeads` are the heads the account approved (a dismissed approval included).
@@ -344,15 +358,74 @@ const tally = (state) => ({
 // ---- local records --------------------------------------------------------------------------------------------------
 
 const slug = (repo, n, login) => `${repo.replace('/', '__')}__${n}__${login}`;
-// The notice record per pull request and account: the failed-round counter (times of failed rounds).
+// The notice record per pull request and account: the failed-round counter (`failed`, times of failed rounds), the
+// previous check's view (`view`, its signature and since when), the last check's time (`checked`), the view at which a
+// watcher round failed or stopped (`held`), and the question lines already in the notice list (`noticed`). Written
+// only under the pull request's lock. Deleting it at most delays a check, repeats a round or a notice, or resets the
+// failed-round count.
+const readRecord = (dir, id) => readJson(path.join(dir, 'notices', `${id}.json`), null) || {};
+const writeRecord = (dir, id, rec) => writeAtomic(path.join(ownerDir(path.join(dir, 'notices')), `${id}.json`), JSON.stringify(rec));
 function failedRounds(dir, id) {
-  const rec = readJson(path.join(dir, 'notices', `${id}.json`), {});
+  const rec = readRecord(dir, id);
   return (Array.isArray(rec.failed) ? rec.failed : []).filter((t) => Number.isFinite(t) && Date.now() - t < DAY);
 }
-function countFailed(dir, id) {
-  const file = path.join(ownerDir(path.join(dir, 'notices')), `${id}.json`);
-  const rec = readJson(file, {});
-  writeAtomic(file, JSON.stringify({ ...rec, failed: [...failedRounds(dir, id), Date.now()] }));
+const countFailed = (dir, id) => writeRecord(dir, id, { ...readRecord(dir, id), failed: [...failedRounds(dir, id), Date.now()] });
+
+// ---- the notice list ------------------------------------------------------------------------------------------------
+
+// A notice line, composed from the printed line's fields only; null for a line the user need not see.
+// Questions the watcher holds a pull request on until something changes carry the head, so that the same question on a
+// later head is asked again.
+const HOLD = ['cap', 'agent-cannot-start', 'hook-did-not-run', 'account'];
+function questionText(pr, q, head) {
+  return [pr, 'question', q.ask, q.keys?.join(','), q.submodules && `${q.submodules} submodule(s)`, q.rounds !== undefined && `${q.rounds} round(s) in 24 hours`,
+    HOLD.includes(q.ask) && head && `at ${short(head)}`, q.link].filter(Boolean).join(' ');
+}
+function noticeText(pr, l) {
+  if (l.event === 'published') return `${pr} ${l.review === 'APPROVE' ? 'approved' : 'reviewed'} round ${l.round} at ${short(l.head)}: ${l.new} new, ${l.open} open, ${l.asked} to decide, ${l.blockers} blocking${l.link ? ` ${l.link}` : ''}`;
+  if (l.event === 'failed' || l.event === 'error') return `${pr} round failed: ${l.reason}`;
+  return null;
+}
+// Lines that report an action that needs nothing from the user; every other line counts toward a notification.
+const INFORMATIONAL = /^\S+ (reviewed round|review-blocked label restored)/;
+// Reconciles one pull request's question lines with the questions that hold now: a pending line of the given kinds
+// whose question no longer holds is marked shown, and a question not yet in the list is added (or, from the user's
+// session, which relays it itself, only recorded). Returns how many lines it added.
+function reconcile(base, rec, pr, current, kinds, add) {
+  const stale = (t) => t.startsWith(`${pr} question `) && kinds.includes(t.split(' ')[2]) && !current.includes(t);
+  markShown(pendingNotices(base, SKILL).filter((x) => stale(x.line)));
+  rec.noticed = (Array.isArray(rec.noticed) ? rec.noticed : []).filter((t) => !stale(t));
+  let added = 0;
+  for (const t of current.filter((x) => !rec.noticed.includes(x))) {
+    rec.noticed.push(t);
+    if (add) { addNotice(base, SKILL, t); added++; }
+  }
+  return added;
+}
+const notifyCount = (n) => { if (n) notify(`${SKILL}: ${n} new notice${n === 1 ? '' : 's'}`); };
+
+// What a round or decision printed, into the notice record and, for a round the watcher started, the notice list.
+// The watcher holds the pull request at the view the round read when it failed or stopped on a question it cannot
+// answer itself; an invocation by the user does not read the hold.
+function recordRun(ctx, fromWatcher) {
+  if (!ctx.view || PRINTED.some((l) => l.event === 'locked')) return;
+  const base = runtime.baseDir(ctx.harness);
+  const pr = `${ctx.repo}#${ctx.n}`;
+  const rec = readRecord(ctx.data, ctx.id);
+  const asked = PRINTED.filter((l) => l.event === 'question').map((q) => questionText(pr, q, ctx.view.head));
+  if (!fromWatcher) {
+    if (!PRINTED.some((l) => l.event === 'error') && !process.exitCode) reconcile(base, rec, pr, asked, ASKS, false);
+  } else {
+    let notable = 0;
+    for (const t of PRINTED.map((l) => noticeText(pr, l)).filter(Boolean)) {
+      addNotice(base, SKILL, t);
+      if (!INFORMATIONAL.test(t)) notable++;
+    }
+    notable += reconcile(base, rec, pr, asked, HOLD, true);
+    if (PRINTED.some((l) => ['failed', 'error'].includes(l.event) || (l.event === 'question' && HOLD.includes(l.ask)))) rec.held = sigOf(ctx.view);
+    notifyCount(notable);
+  }
+  writeRecord(ctx.data, ctx.id, rec);
 }
 
 // ---- publishing -----------------------------------------------------------------------------------------------------
@@ -824,8 +897,7 @@ function refuse(msg) {
 
 // Who the account is and what the pull request says. Prints the question about the account when it cannot read it.
 function begin(repo, n, opts) {
-  const harness = opts.harness || (process.env.CLAUDE_CODE_SESSION_ID && !process.env.CODEX_THREAD_ID ? 'claude' : 'codex');
-  if (!['claude', 'codex'].includes(harness)) usage('--harness must be claude or codex');
+  const harness = harnessOf(opts);
   const data = ensureDataDir(SKILL, harness);
   LOG = path.join(data, 'log');
   let login;
@@ -1021,16 +1093,156 @@ function decideVerb(ctx, pos, opts) {
   for (const q of questions(repo, ctx.view, g)) print(q);
 }
 
+// ---- waiting --------------------------------------------------------------------------------------------------------
+
+const interval = () => (Number(process.env.CONCORD_WATCH_INTERVAL) || 300) * 1000;
+const entryKey = (repo, n) => `${repo.toLowerCase()}#${Number(n)}`;
+const NAME = /^[A-Za-z0-9][\w.:[\]-]{0,99}$/;
+
+// watch add: the pull request goes on the watch list with the account gh is logged in as and the harness, model, and
+// effort, and the watcher starts unless it runs. It starts only where it can do its work: outside any harness sandbox,
+// which a process keeps for life. The probe writes in the state directory and reads the GitHub API; where either
+// fails, nothing is added or started, and the user runs the command in a terminal.
+function watchAdd(harness, repo, n, opts) {
+  for (const k of ['model', 'effort']) if (opts[k] !== undefined && !NAME.test(opts[k])) usage(`--${k} must be a name`);
+  let data, login;
+  try {
+    data = ensureDataDir(SKILL, harness);
+    writeAtomic(path.join(data, 'probe'), 'ok');
+    fs.rmSync(path.join(data, 'probe'));
+    login = lower(ghJson(['api', 'user']).login);
+  } catch { /* below */ }
+  if (!login) return print({ event: 'watcher', running: Boolean(data) && runtime.watcherRunning(data), started: false, reason: 'probe' });
+  runtime.updateWatch(data, (list) => { list.entries[entryKey(repo, n)] = { repo, n: Number(n), login, harness, model: opts.model ?? null, effort: opts.effort ?? null }; });
+  print({ event: 'watching', pr: `${repo}#${Number(n)}` });
+  const was = runtime.watcherRunning(data);
+  if (!was) runtime.startDetached(__filename, ['watcher', '--harness', harness]);
+  print({ event: 'watcher', running: was, started: !was });
+}
+
+// watch remove: the user's stop. The entry and its pending lines go; nothing is posted.
+function watchRemove(harness, repo, n) {
+  const data = ensureDataDir(SKILL, harness);
+  const gone = runtime.updateWatch(data, (list) => { const en = list.entries[entryKey(repo, n)]; delete list.entries[entryKey(repo, n)]; return en; });
+  const pr = gone ? `${gone.repo}#${gone.n}` : `${repo}#${Number(n)}`;
+  markShown(pendingNotices(runtime.baseDir(harness), SKILL).filter((x) => x.line.startsWith(`${pr} `)));
+  print({ event: 'unwatched', pr });
+}
+
+// watch status: whether the watcher runs, each entry with its last check, and the pending lines. Lines other than
+// questions are marked shown; a question stays until it is answered.
+function watchStatus(harness) {
+  const data = ensureDataDir(SKILL, harness);
+  print({ event: 'watcher', running: runtime.watcherRunning(data) });
+  for (const e of Object.values(runtime.readWatch(data).entries)) {
+    const { checked } = readRecord(data, slug(e.repo, e.n, e.login));
+    print({ event: 'watching', pr: `${e.repo}#${e.n}`, ...(FIELDS.checked(checked) && { checked }) });
+  }
+  const pending = pendingNotices(runtime.baseDir(harness), SKILL);
+  for (const x of pending) if (FIELDS.notice(x.line)) print({ event: 'notice', notice: x.line });
+  markShown(pending.filter((x) => !/^\S+ question /.test(x.line)));
+}
+
+// Whether a round or decision of this skill runs, on any pull request: rounds run one after another.
+function roundRunning(data) {
+  let names = [];
+  try { names = fs.readdirSync(path.join(data, 'locks')).filter((x) => x.endsWith('.lock')); } catch { return false; }
+  return names.some((x) => running(readJson(path.join(data, 'locks', x), null)));
+}
+
+// One check over the watch list, as docs/design/review-until-approve.md's event table says. A round runs as its own
+// detached process, started from this copy of the script, so that a check ends in seconds; it takes the pull request's
+// lock, and the next check leaves that pull request alone until it ends. Returns 1 when gh or a pull request could not
+// be read, which the watcher counts toward ten failed checks in a row.
+function checkVerb(harness) {
+  const data = ensureDataDir(SKILL, harness);
+  LOG = path.join(data, 'log');
+  const base = runtime.baseDir(harness);
+  const entries = Object.entries(runtime.readWatch(data).entries);
+  if (!entries.length) return 0;
+  let login;
+  try { login = lower(ghJson(['api', 'user']).login); } catch { return 1; }
+  let failed = false;
+  let notable = 0;
+  let next = null;
+  for (const [key, e] of entries) {
+    const pr = `${e.repo}#${e.n}`;
+    const id = slug(e.repo, e.n, e.login);
+    const lock = path.join(ownerDir(path.join(data, 'locks')), `${id}.lock`);
+    if (!takeLock(lock)) continue;
+    const rec = readRecord(data, id);
+    try {
+      rec.checked = new Date().toISOString();
+      if (login !== e.login) {
+        notable += reconcile(base, rec, pr, [`${pr} question account ${e.login}`], [], true);
+        continue;
+      }
+      let view;
+      try { view = readAll(e.repo, e.n, login); } catch { failed = true; continue; }
+      if (view.state !== 'OPEN') {
+        runtime.updateWatch(data, (list) => { delete list.entries[key]; });
+        markShown(pendingNotices(base, SKILL).filter((x) => x.line.startsWith(`${pr} `)));
+        addNotice(base, SKILL, `${pr} ${view.state === 'MERGED' ? 'merged' : 'closed'}; no longer watched`);
+        notable++;
+        continue;
+      }
+      const f = fold(view, login);
+      if (((f.state && blocking(f.state).length) || f.unreadable) && !view.labels.includes('review-blocked')) {
+        try {
+          post(`repos/${e.repo}/issues/${e.n}/labels`, { labels: ['review-blocked'] });
+          addNotice(base, SKILL, `${pr} review-blocked label restored`);
+        } catch { /* an account without write access cannot set it */ }
+      }
+      notable += reconcile(base, rec, pr, questions(e.repo, view, f).map((q) => questionText(pr, q)), ['asked', 'unreadable', 'submodule', 'account'], true);
+      const sig = sigOf(view);
+      if (rec.view?.sig !== sig) rec.view = { sig, since: Date.now() };
+      else if (next) continue;
+      else if (pendingOf(e.repo, view, f, login).pending.length) {
+        // Past the daily cap, nothing runs until the user invokes the skill, which answers the question.
+        const capped = rec.noticed?.some((t) => t.startsWith(`${pr} question cap `));
+        if (Date.now() - rec.view.since >= interval() && rec.held !== sig && !capped) next = e;
+      } else if (approval({ state: f.state, live: view, login, unreadable: f.unreadable, approvedHeads: approvedHeads(view) }).approve) next = e;
+    } finally {
+      writeRecord(data, id, rec);
+      releaseLock(lock);
+    }
+  }
+  if (next && !roundRunning(data)) {
+    runtime.startDetached(__filename, ['round', next.repo, String(next.n), '--harness', harness, '--from', 'watcher',
+      ...(next.model ? ['--model', next.model] : []), ...(next.effort ? ['--effort', next.effort] : [])]);
+  }
+  notifyCount(notable);
+  return failed ? 1 : 0;
+}
+
+const harnessOf = (opts) => {
+  const h = opts.harness || (process.env.CLAUDE_CODE_SESSION_ID && !process.env.CODEX_THREAD_ID ? 'claude' : 'codex');
+  if (!['claude', 'codex'].includes(h)) usage('--harness must be claude or codex');
+  return h;
+};
+const target = (repo, n) => /^[\w.-]+\/[\w.-]+$/.test(repo || '') && /^\d+$/.test(n || '');
+
 async function main(argv) {
-  const [verb, repo, n, ...rest] = argv;
-  if (!['state', 'round', 'decide'].includes(verb) || !/^[\w.-]+\/[\w.-]+$/.test(repo || '') || !/^\d+$/.test(n || '')) usage('usage: review-until-approve.js state|round|decide <owner/repo> <n> [...]');
+  const [verb, ...more] = argv;
+  if (verb === 'watch') {
+    const [sub, ...rest] = more;
+    const { pos, opts } = parseArgs(rest);
+    const harness = harnessOf(opts);
+    if (sub === 'status' && !pos.length) return watchStatus(harness);
+    if (!['add', 'remove'].includes(sub) || pos.length !== 2 || !target(...pos)) usage('usage: review-until-approve.js watch add|remove <owner/repo> <n> | watch status');
+    return sub === 'add' ? watchAdd(harness, ...pos, opts) : watchRemove(harness, ...pos);
+  }
+  if (verb === 'check') { process.exitCode = checkVerb(harnessOf(parseArgs(more).opts)); return; }
+  if (verb === 'watcher') return runtime.watch({ skill: SKILL, harness: harnessOf(parseArgs(more).opts), own: __filename });
+  const [repo, n, ...rest] = more;
+  if (!['state', 'round', 'decide'].includes(verb) || !target(repo, n)) usage('usage: review-until-approve.js state|round|decide <owner/repo> <n> [...] | watch ... | check | watcher');
   const { pos, opts } = parseArgs(rest);
   trapSignals();
   const ctx = begin(repo, n, opts);
   if (!ctx) return;
   if (verb === 'state') return stateVerb(ctx);
-  if (verb === 'decide') return withLock(ctx, () => decideVerb(ctx, pos, opts));
-  return withLock(ctx, () => roundVerb(ctx, opts));
+  if (verb === 'decide') return withLock(ctx, () => { decideVerb(ctx, pos, opts); recordRun(ctx, false); });
+  return withLock(ctx, async () => { await roundVerb(ctx, opts); recordRun(ctx, opts.from === 'watcher'); });
 }
 
 if (require.main === module) {

@@ -1,8 +1,8 @@
 ---
 name: review-until-approve
 description: >-
-  Use when the user names someone else's pull request and wants it reviewed until it can be approved: each invocation runs a round when something is pending (a confined reviewer and a confined verifier, published as one review), and approves the reviewed head once nothing blocks; invoke it again after the author pushes or replies —
-  "이 PR 승인될 때까지 리뷰해줘", "review this PR until it is approvable", "review acme/app#57 again".
+  Use when the user names someone else's pull request and wants it reviewed until it can be approved: each round runs a confined reviewer and a confined verifier and publishes one review, and the reviewed head is approved once nothing blocks; a background watcher with no model call runs the next round when the author pushes or replies, and approves when the pull request becomes ready —
+  "이 PR 승인될 때까지 리뷰해줘", "review this PR until it is approvable", "watch acme/app#57 and approve when clean", "stop watching acme/app#57".
   Do NOT use for your own branch (use review-and-fix) or to collect other reviewers' comments on your own PR (use pr-to-merge).
 ---
 
@@ -10,7 +10,7 @@ description: >-
 
 You run the script that reviews a pull request someone else wrote, relay what it prints, and ask the user the questions it reports. The script does the review without you: a confined reviewer and a confined verifier read the pull request in a directory you never open, and the script publishes what survives as one GitHub review whose last line holds the whole state. It approves the reviewed head when nothing blocks. It never requests changes, merges, or pushes.
 
-Invoking this skill on a pull request authorizes every review the script posts there, the approval included, the decision comments `decide` posts, and the changes to the `review-blocked` label. Use it only for a pull request the user named.
+Invoking this skill on a pull request authorizes every review the script posts there, the approval included, the decision comments `decide` posts, the changes to the `review-blocked` label, and putting the pull request on the watch list, from which the background watcher runs those rounds and approvals without the user present. Use it only for a pull request the user named.
 
 ## What you never do
 
@@ -29,7 +29,7 @@ Invoking this skill on a pull request authorizes every review the script posts t
 
 ## A round
 
-Run `round <owner/repo> <n> --harness <claude|codex>`, with the options the user asked for (below). It runs a round when something is pending: no review yet, a new head, a reply from the author or an account with write access, or a changed description. With nothing pending it approves the reviewed head when the condition holds, and otherwise prints `nothing`. There is no waiting yet: when the author pushes or replies, the user invokes the skill again, and you run `round` again.
+On every invocation, first run `watch add <owner/repo> <n> --harness <claude|codex>`, outside any sandbox (the watcher keeps the sandbox of the process that starts it), with the `--model` and `--effort` the user asked for (below), then `round <owner/repo> <n> --harness <claude|codex>` with the same options. `round` runs a round when something is pending: no review yet, a new head, a reply from the author or an account with write access, or a changed description. With nothing pending it approves the reviewed head when the condition holds, and otherwise prints `nothing`. A round the user invokes runs even when the watcher is holding back a failed one. After that, the watcher waits for the author (see Waiting); you do not.
 
 Each line is one JSON object. Say one line per event to the user:
 
@@ -43,6 +43,28 @@ Each line is one JSON object. Say one line per event to the user:
 - `question`: ask the user, as below.
 
 `state <owner/repo> <n> --harness <claude|codex>` prints the same view without acting: `pending`, whether the head is `approvable`, `why` not, the counts, and the questions.
+
+## Waiting
+
+`watch add` puts the pull request on the watch list with the account `gh` is logged in as and the harness, model, and effort, and starts the background watcher unless it runs. Say what it prints:
+
+- `watching` with `pr`: the pull request is on the list.
+- `watcher` with `started: true`: the watcher was started; `running: true`: it was already running. Both mean that rounds now run without a session.
+- `watcher` with `reason: probe`: the state directory or GitHub could not be reached from here (a harness sandbox), so nothing was added or started. Give the user the same `watch add` command, with the `scripts/` directory resolved, to run in a terminal.
+
+The watcher checks every five minutes with `gh` and no model. A push, a reply, or a description edit runs a round once the head and the replies have stayed unchanged for one check; a pull request made ready after a clean review is approved with no agent; a merged or closed one leaves the list. It runs at most six agent rounds per pull request in 24 hours, does not retry a failed round until something changes, and writes what it did to Concord's notice list, which the session-start message shows.
+
+`watch status --harness <claude|codex>` prints whether the watcher runs (`watcher`, `running`), each watched pull request with the time of its last check (`watching`, `pr`, `checked`), and each pending line (`notice`). Relay them. A `notice` line starts with the pull request:
+
+- `approved round <r> at <head>: ...` and `reviewed round <r> at <head>: ...`: a review the watcher published, with its counts and link.
+- `round failed: <reason>`: a round posted nothing (reasons as under `failed` above). The watcher waits for something new; invoking the skill retries at once.
+- `merged; no longer watched`, `closed; no longer watched`: the pull request left the list.
+- `review-blocked label restored`: the label was removed while a blocker is open, and the watcher added it back.
+- `question <ask> ...`: a question, as under Questions; `question account <login>` means `gh` is now logged in as another account than `<login>`, the account the pull request was added with, so the watcher skips it until that account is back or the user invokes the skill as the account they want. Ask the user. A question line stays pending until it is answered: by `decide`, by a round that settles it, or by the user's next invocation on that pull request. `watch status` marks every other line shown.
+
+When a session starts with `review-until-approve:` lines, or says the watcher is not running, run `watch status` and relay it; invoking the skill on a pull request starts the watcher again.
+
+The user's stop ("stop watching acme/app#57", "그 PR 그만 봐") is `watch remove <owner/repo> <n> --harness <claude|codex>`: it prints `unwatched`, removes the entry and its pending lines, and posts nothing. Nothing else stops the watcher on a pull request but its merge or close.
 
 ## Questions
 
@@ -70,7 +92,7 @@ Set an option only on the user's explicit request; never infer one from the lang
 | "opus", "sonnet", "haiku", or another model name of the harness's vendor | `--model <name>` |
 | "low", "medium", "high", "xhigh", "max", "고강도로" (high), "최대로" (max) | `--effort <level>` |
 
-"Thorough" and "꼼꼼히" are not an effort request. Ask one question when the request conflicts (a model of the other vendor) or no single value fits. `--model` and `--effort` apply to the round you run; pass them again on each invocation the user wants them for.
+"Thorough" and "꼼꼼히" are not an effort request. Ask one question when the request conflicts (a model of the other vendor) or no single value fits. `--model` and `--effort` apply to the round you run and, through `watch add`, to the watcher's rounds on that pull request; pass them again on each invocation the user wants them for, since `watch add` without them returns the watcher to the harness's default.
 
 ## What a review holds
 
