@@ -35,7 +35,7 @@ const REQUESTS = path.join(__dirname, '..', 'references');
 // ---- output: the fixed vocabulary -----------------------------------------------------------------------------------
 
 const ASKS = ['asked', 'unreadable', 'submodule', 'agent-cannot-start', 'hook-did-not-run', 'cap', 'account', 'overflow'];
-const REASONS = ['reviewer-output', 'verifier-output', 'verifier-list', 'prepare', 'submission', 'refused', 'author', 'github', 'reason-refused', 'internal'];
+const REASONS = ['reviewer-output', 'verifier-list', 'prepare', 'submission', 'refused', 'author', 'github', 'reason-refused', 'internal'];
 const PENDING = ['first', 'head', 'reply', 'description', 'start-over'];
 const WHY = ['closed', 'head-moved', 'draft', 'author', 'blocker', 'unreadable', 'submodule', 'approved', 'overflow'];
 const sha = (v) => typeof v === 'string' && HEX.test(v);
@@ -117,6 +117,7 @@ const isSub = (s) => s && typeof s === 'object' && typeof s.path === 'string' &&
 function validState(s) {
   return s && typeof s === 'object' && s.v === 1 && Number.isInteger(s.round) && s.round > 0 && typeof s.agents === 'boolean'
     && sha(s.head) && sha(s.base) && sha(s.mergeBase) && typeof s.desc === 'string' && typeof s.notes === 'string' && typeof s.lang === 'string'
+    && s.seen && Number.isInteger(s.seen.issue) && Number.isInteger(s.seen.review)
     && Array.isArray(s.subs) && s.subs.every(isSub) && Array.isArray(s.findings) && s.findings.every(isFinding)
     && new Set(s.findings.map((f) => f.key)).size === s.findings.length;
 }
@@ -237,7 +238,9 @@ function fold(view, login) {
     else applied.push(d);
   }
   const ruled = Math.max(0, ...rulings.map((d) => d.at));
-  const nextRound = Math.max(0, ...states.filter((s) => s.state).map((s) => s.state.round)) + 1;
+  // Each published review takes the next round number, so no round is above the count of state reviews: counting them
+  // keeps an unparsable review's number from being reused.
+  const nextRound = Math.max(states.length, ...states.filter((s) => s.state).map((s) => s.state.round)) + 1;
   // The newest state review of any kind, for the superseded check.
   const newest = states.at(-1)?.id ?? null;
   return { state, base: baseItem, unreadable: bad.some((t) => t > ruled), startedOver: startOver > 0 && !baseItem, threads, replies, states, nextRound, newest, applied };
@@ -272,20 +275,26 @@ function canWrite(repo, login) {
   return permissions.get(login);
 }
 
-// Replies newer than the state review that count: from the author or an account with write access, in a finding
-// thread or the conversation. Returns the keys replied to, and whether the conversation has one.
+// Replies the state's round did not see that count: from the author or an account with write access, in a finding
+// thread or the conversation. The state records the newest comment ids its round read (`seen`), so a reply posted
+// while a round ran, or before a review that ran no agent, stays pending. Returns the keys replied to, and whether the
+// conversation has one.
 function repliesSince(repo, view, f, login) {
-  const since = f.base?.at || 0;
-  const counts = (c) => {
+  const counts = (c, seen) => {
     const who = lower(c.author?.login);
-    return who && who !== login && time(c.createdAt) > since && (who === view.author || canWrite(repo, who));
+    return who && who !== login && c.databaseId > seen && (who === view.author || canWrite(repo, who));
   };
   const keys = [];
   for (const k of f.state?.findings.map((x) => x.key) || []) {
-    if ((f.threads.get(k)?.others || []).some(counts)) keys.push(k);
+    if ((f.threads.get(k)?.others || []).some((c) => counts(c, f.state.seen.review))) keys.push(k);
   }
-  return { keys, conversation: view.comments.some(counts) };
+  return { keys, conversation: view.comments.some((c) => counts(c, f.state.seen.issue)) };
 }
+// The newest comment ids a read saw, for `seen`.
+const seenOf = (view) => ({
+  issue: Math.max(0, ...view.comments.map((c) => c.databaseId || 0)),
+  review: Math.max(0, ...view.threads.flatMap((t) => (t.comments?.nodes || []).map((c) => c.databaseId || 0))),
+});
 
 function pendingOf(repo, view, f, login) {
   if (!f.state) return { pending: [f.startedOver ? 'start-over' : 'first'], keys: [] };
@@ -435,7 +444,8 @@ function compose({ state, prev, texts = {}, place = {}, threads = new Map(), unv
     const subs = state.subs.filter((s) => !s.ok);
     if (subs.length) {
       out.push(`### Unreviewed submodules (approval waits for your decision on each)`);
-      for (const s of subs) out.push(`-${full ? ` ${fencePath(s.path)}\n` : ' '}\`${s.from ? short(s.from) : 'new'}\` to \`${short(s.to)}\``);
+      // A fence never opens on a list item's line: it would end at the next unindented line and show the path live.
+      for (const s of subs) out.push(`Change \`${s.from ? short(s.from) : 'new'}\` to \`${short(s.to)}\`${full ? `:\n\n${fencePath(s.path)}` : ''}`);
     }
     if (approve) {
       const minors = state.findings.filter((f) => f.status === 'open' && f.class === 'minor');
@@ -458,14 +468,6 @@ function compose({ state, prev, texts = {}, place = {}, threads = new Map(), unv
   return { event: 'COMMENT', body: body.length <= MAX_BODY ? body : note, comments: [], state: kept, overflow: true };
 }
 
-// Moves the line comments into the body, once, after GitHub refused a position.
-function inBody(review) {
-  const extra = review.comments.map((c) => `- ${fencePath(c.path)}\nline ${c.line}\n\n${lines(c.body).slice(1).join('\n')}`);
-  const parts = review.body.split('\n\n');
-  const marker = parts.pop();
-  return { ...review, comments: [], body: [...parts, '### Placed in the body', ...extra, marker].join('\n\n') };
-}
-
 // Every text a review posts must pass the scan; returns the refusal reason or null.
 function scan(review, secrets) {
   for (const t of [review.body, ...review.comments.map((c) => c.body)]) {
@@ -475,12 +477,14 @@ function scan(review, secrets) {
   return null;
 }
 
-// Submits one review pinned to the reviewed head. `fresh` is the account's newest state review id at the round's start:
-// a newer one means another round published first. Returns { posted, url } or { superseded } or { failed }.
-function submit(repo, n, login, review, startNewest) {
+// Submits one review pinned to the reviewed head. `start` is what the round read: a newer state review, a decision
+// posted since, or an item edited since means the review would drop or ignore it, so nothing is posted. `inBody`
+// composes the same review with every finding in the body, used once after GitHub refused a line position; it returns
+// null when its text does not pass the scan. Returns { posted, url, review }, { superseded }, or { failed }.
+function submit(repo, n, login, review, start, inBody) {
   const url = `repos/${repo}/pulls/${n}/reviews`;
-  const mineNow = () => fold({ reviews: readMeta(repo, n, login).reviews, comments: [], threads: [] }, login);
-  if (mineNow().newest !== startNewest) return { superseded: true };
+  const now = fold(readAll(repo, n, login), login);
+  if (now.newest !== start.newest || now.applied.length !== start.applied.length || now.unreadable !== start.unreadable) return { superseded: true };
   const payload = (r) => ({ commit_id: r.state.head, event: r.event, body: r.body, comments: r.comments });
   const ours = () => readMeta(repo, n, login).reviews.find((r) => { const s = stateOf(r.body); return s && s.round === review.state.round && s.head === review.state.head; });
   let r = review;
@@ -489,7 +493,11 @@ function submit(repo, n, login, review, startNewest) {
       const res = post(url, payload(r));
       return { posted: true, url: res.html_url, review: r };
     } catch (e) {
-      if (e.status === '422' && r.comments.length) { r = inBody(r); continue; }
+      if (e.status === '422' && r.comments.length) {
+        r = inBody();
+        if (!r) return { failed: 'refused' };
+        continue;
+      }
       if (e.status === '422') return { failed: 'refused' };
       // The call may have reached GitHub: a review with this round's number and head counts as posted.
       try {
@@ -544,16 +552,18 @@ function publishCarried(ctx, { carried = false, head }) {
 function publish(ctx, { state, prev, texts, place, unverified, newKeys = [], carried = false }) {
   const { repo, n, login, f } = ctx;
   const live = readMeta(repo, n, login);
-  let review = compose({ state, prev, texts, place, threads: f.threads, unverified, newKeys, carried, approve: false });
+  const make = (where, approve) => compose({ state, prev, texts, place: where, threads: f.threads, unverified, newKeys, carried, approve });
+  let review = make(place, false);
   const cond = approval({ state: review.state, live, login, unreadable: f.unreadable, approvedHeads: approvedHeads(live), overflow: review.overflow });
-  if (cond.approve) review = compose({ state, prev, texts, place, threads: f.threads, unverified, newKeys, carried, approve: true });
+  if (cond.approve) review = make(place, true);
   if (review.overflow) cond.why = [...new Set([...cond.why, 'overflow'])];
-  const why = scan(review, ctx.secrets);
-  if (why) {
-    log('scan', why);
-    return [{ event: 'failed', reason: 'refused' }];
-  }
-  const res = submit(repo, n, login, review, f.newest);
+  const scanned = (r) => {
+    const why = scan(r, ctx.secrets);
+    if (why) log('scan', why);
+    return why ? null : r;
+  };
+  if (!scanned(review)) return [{ event: 'failed', reason: 'refused' }];
+  const res = submit(repo, n, login, review, f, () => scanned(make({}, review.event === 'APPROVE')));
   if (res.superseded) return [{ event: 'superseded' }];
   if (res.failed) return [{ event: 'failed', reason: res.failed }];
   const s = res.review.state;
@@ -627,8 +637,14 @@ function extract(gitDir, rev, into) {
 function prepare(ctx, rangeBase) {
   const { repo, n, view, f, gitDir, mergeBase, harness } = ctx;
   fs.mkdirSync(prsDir(harness), { recursive: true, mode: 0o700 });
+  // A round directory a day old belongs to a round that was killed: no round lives that long.
+  for (const e of fs.readdirSync(prsDir(harness)).filter((x) => x.startsWith('rua-'))) {
+    const p = path.join(prsDir(harness), e);
+    try { if (Date.now() - fs.statSync(p).mtimeMs > DAY) fs.rmSync(p, { recursive: true, force: true }); } catch { /* vanished */ }
+  }
   const dir = fs.mkdtempSync(path.join(prsDir(harness), `rua-${repo.replace('/', '__')}__${n}-`));
   ctx.roundDir = dir;
+  OWNED.add(dir);
   EXCLUDE = dir;
   const write = (file, v) => fs.writeFileSync(path.join(dir, file), typeof v === 'string' || Buffer.isBuffer(v) ? v : `${JSON.stringify(v, null, 2)}\n`);
   write('pr.json', { number: Number(n), title: view.title, body: view.body, author: view.author, draft: view.draft, head: view.head, mergeBase });
@@ -640,7 +656,7 @@ function prepare(ctx, rangeBase) {
     .flatMap((p) => p.check_runs || []).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion }))));
   write('prior.json', {
     findings: (f.state?.findings || []).map((x) => ({ ...x, text: f.threads.get(x.key)?.text, replies: (f.threads.get(x.key)?.others || []).map((c) => ({ author: c.author?.login, body: c.body, createdAt: c.createdAt })) })),
-    conversation: view.comments.filter((c) => lower(c.author?.login) !== ctx.login && time(c.createdAt) > (f.base?.at || 0)).map((c) => ({ author: c.author?.login, body: c.body, createdAt: c.createdAt })),
+    conversation: view.comments.filter((c) => lower(c.author?.login) !== ctx.login && c.databaseId > (f.state?.seen.issue ?? 0)).map((c) => ({ author: c.author?.login, body: c.body, createdAt: c.createdAt })),
   });
   // Private material is read only where its audience matches: a private repository's closing tickets and related
   // repositories, of the same owner.
@@ -752,7 +768,9 @@ function nextState(ctx, list, round) {
     const x = findings.find((y) => y.key === v.key);
     texts[x.key] = { reply: v.reply, span: v.span };
     if (x.status === 'waived') continue;
-    // A finding the user decided on is closed only by the user or by `fixed`.
+    // An asked finding waits for the user unless a round finds it fixed; a finding the user decided on is closed only
+    // by the user or by `fixed`.
+    if (x.status === 'asked' && v.status !== 'fixed') continue;
     if (x.decided && ['answered', 'asked'].includes(v.status)) continue;
     if (v.status === x.status) continue;
     x.status = v.status;
@@ -769,7 +787,7 @@ function nextState(ctx, list, round) {
   });
   const subs = gitlinks(ctx.gitDir, mergeBase, head).map((s) => ({ ...s, ok: Boolean(prev?.subs.some((p) => p.path === s.path && p.to === s.to && p.ok)) }));
   return {
-    state: { v: 1, round, agents: true, head, base: rangeBase, mergeBase, desc: descHash(view.title, view.body), notes: '', lang: ctx.lang, subs, findings },
+    state: { v: 1, round, agents: true, head, base: rangeBase, mergeBase, desc: descHash(view.title, view.body), notes: '', lang: ctx.lang, seen: seenOf(view), subs, findings },
     texts, newKeys,
   };
 }
@@ -788,6 +806,11 @@ function parseArgs(argv) {
 function usage(msg) {
   process.stderr.write(`review-until-approve: ${msg}\n`);
   process.exit(2);
+}
+// The same refusal from inside a lock: the caller returns, so the lock is released.
+function refuse(msg) {
+  process.stderr.write(`review-until-approve: ${msg}\n`);
+  process.exitCode = 2;
 }
 
 // Who the account is and what the pull request says. Prints the question about the account when it cannot read it.
@@ -813,10 +836,25 @@ function readView(ctx) {
   ctx.f = fold(ctx.view, ctx.login);
   return true;
 }
+// What this process must remove if it is stopped: the round directory (it can hold private material), the work and
+// git directories, and its lock. A stopped agent finds its round directory gone; its mode file names nothing then.
+const OWNED = new Set();
+let LOCK = null;
+function trapSignals() {
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(sig, () => {
+      for (const d of OWNED) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
+      if (LOCK) { try { releaseLock(LOCK); } catch { /* best effort */ } }
+      process.exit(130);
+    });
+  }
+}
+
 // One lock file per pull request and account: a second round or decision on it prints `locked`.
 async function withLock(ctx, fn) {
   const file = path.join(ownerDir(path.join(ctx.data, 'locks')), `${ctx.id}.lock`);
   if (!takeLock(file)) return print({ event: 'locked' });
+  LOCK = file;
   try {
     return await fn();
   } finally {
@@ -842,7 +880,7 @@ function stateVerb(ctx) {
 async function roundVerb(ctx, opts) {
   ctx.model = opts.model;
   ctx.effort = opts.effort;
-  if (opts.language !== undefined && !/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(opts.language)) usage('--language must be a BCP 47 tag such as ko or en');
+  if (opts.language !== undefined && !/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(opts.language)) return refuse('--language must be a BCP 47 tag such as ko or en');
   if (!readView(ctx)) return;
   const { repo, n, view, login } = ctx;
   if (ended(view)) return;
@@ -865,10 +903,8 @@ async function roundVerb(ctx, opts) {
       for (const q of questions(repo, view, f)) print(q);
       return;
     }
-    const used = f.states.filter((s) => s.state?.agents && Date.now() - s.at < DAY).length + failedRounds(ctx.data, ctx.id).length;
-    if (used >= CAP) return print({ event: 'question', ask: 'cap', rounds: used, link: view.url });
-
     ctx.gitDir = work.gitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rua-git-'));
+    OWNED.add(ctx.gitDir);
     git(ctx.gitDir, ['init', '-q', '--bare']);
     fs.mkdirSync(path.join(ctx.gitDir, 'info'), { recursive: true });
     fs.writeFileSync(path.join(ctx.gitDir, 'info', 'attributes'), '* -export-ignore -export-subst\n');
@@ -885,6 +921,9 @@ async function roundVerb(ctx, opts) {
       for (const q of questions(repo, view, f)) print(q);
       return;
     }
+    // The daily cap counts rounds that ran an agent: published ones from the state reviews, failed ones locally.
+    const used = f.states.filter((x) => x.state?.agents && Date.now() - x.at < DAY).length + failedRounds(ctx.data, ctx.id).length;
+    if (used >= CAP) return print({ event: 'question', ask: 'cap', rounds: used, link: view.url });
     const rangeBase = ancestor && s.mergeBase === ctx.mergeBase && !pending.includes('description') ? s.head : ctx.mergeBase;
     ctx.rangeBase = rangeBase;
     const failed = (reason) => { countFailed(ctx.data, ctx.id); print({ event: 'failed', reason }); };
@@ -893,6 +932,7 @@ async function roundVerb(ctx, opts) {
       return print({ event: 'failed', reason: 'prepare' });
     }
     ctx.work = fs.mkdtempSync(path.join(ownerDir(path.join(ctx.data, 'rounds')), 'r-'));
+    OWNED.add(ctx.work);
     const round = f.nextRound;
     const focus = pending.length === 1 && pending[0] === 'reply' && keys.length ? keys.join(', ') : 'every finding in prior.json';
     const fill = { ROUND_DIR: ctx.roundDir, LANGUAGE: ctx.lang || 'the language of the pull request description', FOCUS: focus, BROAD: rangeBase === ctx.mergeBase ? 'the whole pull request' : 'the commits since the last reviewed head (diff.patch), with pr.patch for context' };
@@ -930,20 +970,20 @@ async function roundVerb(ctx, opts) {
 function decideVerb(ctx, pos, opts) {
   const [what, decision] = pos;
   const reason = String(opts.reason || '').trim();
-  if (!reason) usage('decide needs --reason with the user\'s words');
+  if (!reason) return refuse('decide needs --reason with the user\'s words');
   let d;
   if (['continue', 'start-over'].includes(what) && decision === undefined) d = { ruling: what };
   else if (KEY.test(what || '') && DECISIONS.includes(decision)) d = { key: what, decision };
   else if (/^submodule:./.test(what || '') && decision === 'accept') d = { submodule: what.slice('submodule:'.length), decision };
-  else usage('usage: decide <owner/repo> <n> <key> keep|waive|blocker|minor | submodule:<path> accept | continue|start-over --reason <text>');
+  else return refuse('usage: decide <owner/repo> <n> <key> keep|waive|blocker|minor | submodule:<path> accept | continue|start-over --reason <text>');
   if (!readView(ctx)) return;
   const { repo, n, view, f, login } = ctx;
   if (ended(view)) return;
-  if (d.ruling && !f.unreadable) usage('the state is readable; there is nothing to rule on');
-  if (d.key && !f.state?.findings.some((x) => x.key === d.key)) usage(`no finding ${d.key} in the state`);
+  if (d.ruling && !f.unreadable) return refuse('the state is readable; there is nothing to rule on');
+  if (d.key && !f.state?.findings.some((x) => x.key === d.key)) return refuse(`no finding ${d.key} in the state`);
   if (d.submodule !== undefined) {
     const s = f.state?.subs.find((x) => x.path === d.submodule && !x.ok);
-    if (!s) usage('no undecided submodule change at that path');
+    if (!s) return refuse('no undecided submodule change at that path');
     d.to = s.to;
   }
   const words = d.ruling ? `the state: **${d.ruling}**` : d.key ? `\`${d.key}\`: **${d.decision}**` : `the submodule change to \`${short(d.to)}\`: **accept**`;
@@ -965,6 +1005,7 @@ async function main(argv) {
   const [verb, repo, n, ...rest] = argv;
   if (!['state', 'round', 'decide'].includes(verb) || !/^[\w.-]+\/[\w.-]+$/.test(repo || '') || !/^\d+$/.test(n || '')) usage('usage: review-until-approve.js state|round|decide <owner/repo> <n> [...]');
   const { pos, opts } = parseArgs(rest);
+  trapSignals();
   const ctx = begin(repo, n, opts);
   if (!ctx) return;
   if (verb === 'state') return stateVerb(ctx);
@@ -980,4 +1021,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { compose, approval, stateOf, decisionOf, stateLine, fold, checkList, valid, FIELDS, MAX_BODY, inBody, hunksOf, placeLine };
+module.exports = { compose, approval, stateOf, decisionOf, stateLine, fold, checkList, valid, FIELDS, MAX_BODY, hunksOf, placeLine };

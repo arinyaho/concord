@@ -115,7 +115,8 @@ if (b.start === 'fail') process.exit(1);
 // Another round publishing while this one runs: a state review appears in the world before this agent finishes.
 if (b.inject && role === 'verifier') {
   const w = JSON.parse(fs.readFileSync(b.inject.file, 'utf8'));
-  w.reviews.push(b.inject.review);
+  if (b.inject.review) w.reviews.push(b.inject.review);
+  if (b.inject.comment) w.comments.push(b.inject.comment);
   fs.writeFileSync(b.inject.file, JSON.stringify(w));
 }
 const hook = (tool_name, tool_input) => {
@@ -227,7 +228,7 @@ function fullState(w, s = {}) {
   const v = w.read();
   return {
     v: 1, round: 1, agents: true, head: v.pr.headRefOid, base: w.mergeBase, mergeBase: w.mergeBase,
-    desc: crypto.createHash('sha256').update(`${v.pr.title}\n\n${v.pr.body}`).digest('hex'), notes: '', lang: '', subs: [], findings: [], ...s,
+    desc: crypto.createHash('sha256').update(`${v.pr.title}\n\n${v.pr.body}`).digest('hex'), notes: '', lang: '', seen: { issue: 0, review: 0 }, subs: [], findings: [], ...s,
   };
 }
 const finding = (w, f) => ({ key: '1.1', class: 'blocker', status: 'open', file: 'a.js', line: 3, raised: w.head, at: w.head, closed: null, closedRound: null, decided: false, ...f });

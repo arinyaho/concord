@@ -5,7 +5,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { world, stateReview, fullState, finding, thread, comment, decision, TOKEN } = require('./world');
-const { valid, stateOf } = require('../scripts/review-until-approve');
+const { valid, stateOf, fold } = require('../scripts/review-until-approve');
+// The round number the next published review takes.
+const fold_next = (w) => { const v = w.read(); return fold({ reviews: v.reviews, comments: v.comments, threads: v.threads }, 'rev').nextRound; };
 const { startTime } = require('../../../runtime/watcher');
 
 const AGENT_TEXT = 'This line is bad.';
@@ -127,6 +129,7 @@ test('criterion 3: an edited counting item, an unparsable state, or a decision n
     assert.equal(posts(w).length, 0, `${name}: nothing approved`);
     assert.deepEqual(labels(w), ['review-blocked'], name);
     // The ruling: continue carries the state forward and approves; the label goes.
+    if (name === 'an unparsable state') assert.equal(fold_next(w), 3, 'an unparsable review keeps its round number');
     const d = run(w, ['decide', 'o/r', '5', 'continue', '--reason', 'The edit was mine.']);
     assert.deepEqual(events(d), ['decided', 'published'], name);
     assert.equal(d.out[1].review, 'APPROVE', name);
@@ -176,7 +179,36 @@ test('criterion 5: a reply counts only from the author or an account with write 
   assert.deepEqual(pending([{ login: 'dev', body: 'Handled in b.js.' }]), ['reply']);
   assert.deepEqual(pending([{ login: 'maintainer', body: 'Not a defect.' }]), ['reply']);
   assert.deepEqual(pending([], [comment('dev', 'see the new commit')]), ['reply']);
-  assert.deepEqual(pending([{ login: 'dev', body: 'old', at: '2020-01-01T00:00:00Z' }]), [], 'a reply older than the state review');
+  // A reply the state's round already read is not pending again.
+  const seen = world();
+  seen.update((v) => {
+    v.reviews.push(stateReview(seen, { findings: [finding(seen)], seen: { issue: 0, review: 1e9 } }));
+    v.threads.push(thread('1.1', [{ login: 'dev', body: 'old' }]));
+  });
+  assert.deepEqual(run(seen, ['state', 'o/r', '5']).out[0].pending, []);
+});
+
+test('a reply posted while a round runs, or before a decision approves, stays pending', () => {
+  const w = world();
+  w.update((v) => { v.reviews.push(stateReview(w, { findings: [finding(w, { class: 'minor' })] })); v.threads.push(thread('1.1')); });
+  // A decision approves with no agent; the reply posted before it is still pending afterwards.
+  w.update((v) => { v.threads[0].comments.nodes.push({ databaseId: 9e8, author: { login: 'dev' }, body: 'Please look again.', createdAt: new Date(Date.now() - 600e3).toISOString(), lastEditedAt: null, url: 'https://github.com/o/r/pull/5#discussion_r9' }); });
+  assert.deepEqual(run(w, ['state', 'o/r', '5']).out[0].pending, ['reply']);
+  run(w, ['decide', 'o/r', '5', '1.1', 'keep', '--reason', 'It stays.']);
+  assert.deepEqual(run(w, ['state', 'o/r', '5']).out[0].pending, ['reply']);
+});
+
+test('an asked finding is closed only by the user or by fixed, whatever the verifier says', () => {
+  const w = world();
+  w.update((v) => {
+    v.reviews.push(stateReview(w, { findings: [finding(w, { status: 'asked' })] }));
+    v.threads.push(thread('1.1', [{ login: 'dev', body: 'Not a defect.' }]));
+  });
+  w.agents({ reviewer: [{ findings: [] }], verifier: [{ findings: [], verdicts: [{ key: '1.1', status: 'answered', file: 'a.js', span: 'bad line', reply: 'Right.' }] }] });
+  const r = run(w, ['round', 'o/r', '5']);
+  assert.equal(r.out[0].review, 'COMMENT');
+  assert.equal(lastState(w).findings[0].status, 'asked');
+  assert.ok(r.out.some((l) => l.ask === 'asked'));
 });
 
 test('a round started only by thread replies asks about those findings, and an answer without a quote becomes asked', () => {
@@ -294,6 +326,13 @@ test('criterion 11: a newer state review gives superseded; a position error move
   assert.deepEqual(r.out, [{ event: 'superseded' }]);
   assert.equal(posts(w).length, 0);
 
+  // A decision posted while the round ran would be dropped by its review: superseded too.
+  const dd = world();
+  dd.update((v) => { v.reviews.push(stateReview(dd, { head: dd.mergeBase, findings: [finding(dd)] })); });
+  const dec = { ...decision({ key: '1.1', decision: 'waive' }), databaseId: 7777 };
+  dd.agents({ reviewer: [proposal], verifier: [{ findings: [kept()], verdicts: [] }], inject: { file: path.join(dd.dir, 'world.json'), comment: dec } });
+  assert.deepEqual(run(dd, ['round', 'o/r', '5']).out, [{ event: 'superseded' }]);
+
   const p = world();
   p.update((v) => { v.fail = [{ match: 'POST .*pulls/5/reviews', times: 1, status: '422' }]; });
   p.agents({ reviewer: [proposal], verifier: [{ findings: [kept()], verdicts: [] }] });
@@ -303,7 +342,8 @@ test('criterion 11: a newer state review gives superseded; a position error move
   assert.equal(sent.length, 2);
   assert.equal(sent[0].comments.length, 1);
   assert.equal(sent[1].comments.length, 0);
-  assert.match(sent[1].body, /### Placed in the body[\s\S]*> This line is bad\./);
+  assert.match(sent[1].body, /> This line is bad\.\n\n```\nbad line\n```/);
+  assert.doesNotMatch(sent[1].body, /is a line comment/);
   assert.equal(p.read().reviews.length, 1);
   assert.deepEqual(labels(p), ['review-blocked']);
   // Waiving the blocker lifts the block: the label goes and the head is approved.
@@ -406,6 +446,13 @@ test('criterion 14: a seventh agent round within 24 hours does not run; carried,
     v.reviews.sort((a, b) => Date.parse(a.submittedAt) - Date.parse(b.submittedAt));
   });
   assert.deepEqual(events(run(x, ['round', 'o/r', '5'])), ['published']);
+  // At the cap, a base merge still carries the state forward: it runs no agent.
+  const z = world({ base: { 'a.js': 'one\ntwo\nthree\n', 'z.txt': 'z\n' } });
+  z.update((v) => { v.reviews.push(...[1, 2, 3, 4, 5, 6].map((i) => stateReview(z, { round: i }, { at: new Date(Date.now() - (i + 1) * 60e3).toISOString() }))); });
+  z.push(null, { merge: { 'z.txt': 'z changed\n' } });
+  const zc = run(z, ['round', 'o/r', '5']);
+  assert.deepEqual(events(zc), ['published']);
+  assert.equal(zc.out[0].carried, true);
   // A failed round counts through the local counter.
   const y = world();
   y.update((v) => { v.reviews.push(...[1, 2, 3, 4, 5].map((i) => recent(i)(y))); });

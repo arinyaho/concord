@@ -3,11 +3,11 @@
 // limit, and the output vocabulary.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { approval, compose, stateOf, stateLine, decisionOf, valid, MAX_BODY, inBody } = require('../scripts/review-until-approve');
+const { approval, compose, stateOf, stateLine, decisionOf, valid, MAX_BODY } = require('../scripts/review-until-approve');
 
 const H = 'a'.repeat(40);
 const H2 = 'b'.repeat(40);
-const state = (s = {}) => ({ v: 1, round: 2, agents: true, head: H, base: H2, mergeBase: H2, desc: 'd', notes: '', lang: '', subs: [], findings: [], ...s });
+const state = (s = {}) => ({ v: 1, round: 2, agents: true, head: H, base: H2, mergeBase: H2, desc: 'd', notes: '', lang: '', seen: { issue: 0, review: 0 }, subs: [], findings: [], ...s });
 const f = (x = {}) => ({ key: '1.1', class: 'blocker', status: 'open', file: 'a.js', line: 3, raised: H, at: H, closed: null, closedRound: null, decided: false, ...x });
 const live = (x = {}) => ({ state: 'OPEN', head: H, draft: false, author: 'dev', ...x });
 
@@ -67,11 +67,22 @@ test('agent text is escaped and quoted, paths and spans fenced, and the marker i
   assert.match(r.body, /````\n```x```\n````/);
   assert.match(r.body, /```\nb @x\.js\n```\nline 9/);
   assert.ok(r.body.trimEnd().split('\n').at(-1).startsWith('<!-- review-until-approve:state '));
-  // A position error moves the line comment into the body once; the marker stays last.
-  const moved = inBody(r);
+  // After a position error the same review is composed with every finding in the body; the marker stays last.
+  const moved = compose({ state: s, approve: false, newKeys: ['2.1', '2.2'], place: {}, texts: { '2.1': { text: 'ping @alice <b>', span: 'bad line' }, '2.2': { text: 'x', span: 'y' } } });
   assert.equal(moved.comments.length, 0);
-  assert.match(moved.body, /### Placed in the body/);
+  assert.doesNotMatch(moved.body, /is a line comment/);
+  assert.match(moved.body, /> ping ＠alice &lt;b>\n\n```\nbad line\n```\n\n```\na\.js\n```\nline 3/);
   assert.ok(moved.body.split('\n').at(-1).startsWith('<!-- review-until-approve:state '));
+});
+
+test('a fence never opens on a list item line, so a path or span is never shown live', () => {
+  const s = state({ findings: [f({ key: '2.1', file: 'x @org/team <b>y</b>.js' })], subs: [{ path: 'x @org/team <b>y</b>', from: null, to: H2, ok: false }] });
+  const r = compose({ state: s, approve: false, newKeys: ['2.1'], texts: { '2.1': { text: 't', span: '// @octo-org <b>x</b>' } } });
+  const ls = r.body.split('\n');
+  // Every backtick fence stands alone on its line.
+  ls.forEach((l, i) => { if (/`{3,}/.test(l)) assert.match(l, /^`{3,}$/, `line ${i}: ${l}`); });
+  for (const p of ['x @org/team <b>y</b>', 'x @org/team <b>y</b>.js', '// @octo-org <b>x</b>']) assert.match(r.body, new RegExp(`\n\`\`\`\n${p.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}\n\`\`\``), p);
+  assert.ok(!ls.some((l) => /^- .*`{3}/.test(l)));
 });
 
 test('an over-long body shrinks to keys and counts, then drops long-closed findings, then is a COMMENT naming the overflow', () => {
