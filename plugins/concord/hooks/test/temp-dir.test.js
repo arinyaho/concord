@@ -75,6 +75,6 @@ test('the check flags a test file that calls mkdtemp directly', () => {
 test('no plugin test file that CI runs calls mkdtemp outside temp-dir.js', () => {
   const files = testFiles(PLUGINS);
   assert.ok(files.includes(path.join('concord', 'hooks', 'test', 'temp-dir.test.js')));
-  assert.ok(files.includes(path.join('concord', 'skills', 'review-until-approve', 'test', 'review.test.js')));
+  assert.ok(files.includes(path.join('concord', 'skills', 'review-until-approve', 'test', 'round.test.js')));
   assert.deepStrictEqual(filesCallingMkdtemp(PLUGINS), [], 'create temporary directories with tempDir() from plugins/concord/hooks/test/temp-dir.js');
 });

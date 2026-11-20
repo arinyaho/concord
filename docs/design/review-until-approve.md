@@ -197,4 +197,4 @@ Only the three stop cases need the user.
 
 ## Related documents
 
-[workflow-state-and-stops.md](workflow-state-and-stops.md), [independent-review.md](independent-review.md), [explain-pr.md](explain-pr.md) (the read-only mode and launch switches), [pr-to-merge.md](pr-to-merge.md) (approvals and `review-blocked`), [state-cli-locator.md](state-cli-locator.md), [windows-support.md](windows-support.md). [review-artifact-contract.md](review-artifact-contract.md) describes the multi-role runner this design replaces; it is removed with the implementation.
+[workflow-state-and-stops.md](workflow-state-and-stops.md), [independent-review.md](independent-review.md), [explain-pr.md](explain-pr.md) (the read-only mode and launch switches), [pr-to-merge.md](pr-to-merge.md) (approvals and `review-blocked`), [state-cli-locator.md](state-cli-locator.md), [windows-support.md](windows-support.md).
